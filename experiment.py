@@ -3,7 +3,7 @@
 from markupsafe import Markup
 import psynet.experiment
 from psynet.consent import NoConsent
-from psynet.modular_page import Prompt, ModularPage, PushButtonControl, TextControl
+from psynet.modular_page import Prompt, ModularPage, PushButtonControl, TextControl, Control
 from psynet.page import InfoPage, SuccessfulEndPage
 from psynet.timeline import FailedValidation, Timeline
 from psynet.trial.create_and_rate import (
@@ -24,21 +24,54 @@ from psynet.utils import get_logger
 
 import pandas as pd
 import random
+import numpy as np
+
+from typing import List
 
 logger = get_logger()
 
+N_CREATORS_PER_GENERATION = 2
 N_STORIES = 10
-N_GENERATIONS = 10
+N_COLORLISTS = 1
+N_GENERATIONS = 1
 
 stories = pd.read_csv("stories.csv").sample(n=N_STORIES)["Story"].tolist()
 
 
-class StoryNode(CreateAndRateNodeMixin, ChainNode):
-    def __init__(self, story=None, context=None, **kwargs):
-        self.story = story
+class ColorArtefact:
+    def __init__(self, colors: List[List[int]] = None, n: int = 10):
+        if colors is None:
+            colors = self.draw(n)
+
+        assert all([
+            (len(color) == 3) for color in colors
+        ])
+        assert all([
+            all([(c >= 0) and (c <= 255) for c in color]) for color in colors
+        ])
+
+        self.colors = colors
+
+    def draw(self, n: int = 10):
+        return np.random.randint(0, 255 + 1, size=(n, 3))
+
+    def html(self, width="50px"):
+        html = ""
+
+        for color in self.colors:
+            html += f"<div style='background-color: rgb({color[0]}, {color[1]}, {color[2]}); width: {width}; padding: 0px; margin-right: 10px'>&nbsp;</div>"
+
+        return f"<div style='display:flex;'>{html}</div>"
+
+
+class ArtefactNode(CreateAndRateNodeMixin, ChainNode):
+    def __init__(self, artefact=None, artefact_type: str = None, context=None, **kwargs):
+        self.artefact = artefact
+        self.artefact_type = artefact_type
 
         super().__init__(
-            context={"original": story} if story is not None else context, **kwargs
+            context={"original": artefact, "artefact_type": self.artefact_type} if artefact is not None else context,
+            **kwargs
         )
 
     def create_initial_seed(self, experiment=None, participant=None):
@@ -66,12 +99,10 @@ class StoryNode(CreateAndRateNodeMixin, ChainNode):
         definition["generation"] += 1
         definition["last_choice"] = target_str_with_highest_count
 
-        print(definition)
-
         return definition
 
 
-class InputPage(ModularPage):
+class StoryInputPage(ModularPage):
     def __init__(self, label: str, prompt: str, time_estimate: float, bot_response):
         super().__init__(
             label,
@@ -97,14 +128,78 @@ class InputPage(ModularPage):
         return None
 
 
+class ColorReproductionControl(Control):
+    macro = "color_picker_control"
+    external_template = "color-reproduction.html"
+
+    def __init__(self, num_colors=10, picker_type="wheel_sliders", bot_response=None):
+        super().__init__(bot_response=bot_response)  # Pass bot_response to parent Control
+        self.num_colors = num_colors
+        self.picker_type = picker_type
+
+    @property
+    def metadata(self):
+        return {
+            "num_colors": self.num_colors,
+            "picker_type": self.picker_type
+        }
+
+
+class ColorsInputPage(ModularPage):
+    def __init__(self, label: str, prompt: str, time_estimate: float, bot_response):
+        super().__init__(
+            label,
+            Prompt(prompt),
+            control=ColorReproductionControl(
+                bot_response=bot_response  # Pass bot_response to the control, not the page
+            ),
+            time_estimate=time_estimate,
+        )
+
+    def format_answer(self, raw_answer, **kwargs):
+        if not isinstance(raw_answer, dict):
+            return "INVALID_RESPONSE"
+
+        colors = raw_answer.get('selected_colors', [])
+        interactions = raw_answer.get('interactions', [])
+
+        return {
+            'selected_colors': [self._validate_color(c) for c in colors],
+            'selection_duration': raw_answer.get('total_time', 0),
+            'color_change_events': len(interactions),
+            'interaction_log': interactions
+        }
+
+    def _validate_color(self, color):
+        # Ensure color format consistency
+        if isinstance(color, dict) and all(k in color for k in ['r', 'g', 'b']):
+            return [
+                max(0, min(255, int(color['r']))),
+                max(0, min(255, int(color['g']))),
+                max(0, min(255, int(color['b'])))
+            ]
+        return [128, 128, 128]
+
+    def validate(self, response, **kwargs):
+        print(response)
+        if response.answer == "INVALID_RESPONSE":
+            return FailedValidation("Please enter a response.")
+        if not isinstance(response.answer, dict):
+            return FailedValidation("Invalid response format.")
+        colors = response.answer.get('selected_colors', [])
+        if len(colors) == 0:
+            return FailedValidation("Please select at least one color.")
+        return None
+
+
 class ChoicePage(ModularPage):
-    def __init__(self, label: str, prompt: str, stories: list, bot_response):
+    def __init__(self, label: str, prompt: str, artefacts: list, bot_response):
         super().__init__(
             label,
             Prompt(prompt),
             PushButtonControl(
-                choices=stories,
-                labels=[f"Version {i+1}" for i in range(len(stories))],
+                choices=artefacts,
+                labels=[f"Version {i + 1}" for i in range(len(artefacts))],
                 arrange_vertically=True,
                 bot_response=bot_response,
             ),
@@ -115,11 +210,12 @@ class ChoicePage(ModularPage):
 class CreateTrial(CreateTrialMixin, ImitationChainTrial):
     time_estimate = 5
 
-    def show_trial(self, experiment, participant):
-        generation = self.definition["generation"]
+    def first_trial(self):
 
-        if generation == 0:
-            info_page = InfoPage(
+        print(self.context)
+
+        if self.context["artefact_type"] == "text":
+            return InfoPage(
                 Markup(
                     f"<h3>Story Reproduction</h3>"
                     f"<p>Please read and memorize this story:</p>"
@@ -129,8 +225,26 @@ class CreateTrial(CreateTrialMixin, ImitationChainTrial):
                 ),
                 time_estimate=self.time_estimate,
             )
-        else:
-            info_page = InfoPage(
+        elif self.context["artefact_type"] == "colors":
+            color_artefact = ColorArtefact(self.context["original"])
+
+            return InfoPage(
+                Markup(
+                    f"<h3>Colors Reproduction</h3>"
+                    f"<p>Please read and memorize the following colors:</p>"
+                    f"<div style='padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 4px solid #4CAF50;'>"
+                    f"<strong>Original colors:</strong><br>{color_artefact.html()}"
+                    f"</div>"
+                ),
+                time_estimate=self.time_estimate,
+            )
+        return None
+
+    def other_trial(self):
+        generation = self.definition["generation"]
+
+        if self.context["artefact_type"] == "text":
+            return InfoPage(
                 Markup(
                     f"<h3>Story Reproduction - Generation {generation}</h3>"
                     f"<p>Please reproduce the original story.</p>"
@@ -143,15 +257,59 @@ class CreateTrial(CreateTrialMixin, ImitationChainTrial):
                 ),
                 time_estimate=self.time_estimate,
             )
-        input_page = InputPage(
-            "artefact",
-            Markup(
-                f"<h3>Your Task</h3>"
-                f"<p>Please reproduce the story for a peer. They will read multiple proposals and decide which is most likely correct. </p>"
-            ),
-            time_estimate=120,
-            bot_response=lambda: self.context["original"],
-        )
+        elif self.context["artefact_type"] == "colors":
+            color_artefact = ColorArtefact(self.context["original"])
+            last_color_artefact = ColorArtefact(self.definition["last_choice"])
+
+            return InfoPage(
+                Markup(
+                    f"<h3>Colors Reproduction</h3>"
+                    f"<p>Please read and memorize the following colors:</p>"
+                    f"<div style='padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 4px solid #4CAF50;'>"
+                    f"<strong>Original colors:</strong><br>{color_artefact.html()}"
+                    f"</div>"
+                    f"<div style='padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 4px solid #ffc107;'>"
+                    f"<strong>Last winning colors (chosen by a participant):</strong><br>{last_color_artefact.html()}"
+                    f"</div>"
+                ),
+                time_estimate=self.time_estimate,
+            )
+
+        return None
+
+    def input_page(self):
+        if self.context["artefact_type"] == "text":
+            return StoryInputPage(
+                "artefact",
+                Markup(
+                    f"<h3>Your Task</h3>"
+                    f"<p>Please reproduce the story for a peer. They will read multiple proposals and decide which is most likely correct. </p>"
+                ),
+                time_estimate=120,
+                bot_response=lambda: self.context["original"],
+            )
+        elif self.context["artefact_type"] == "colors":
+            return ColorsInputPage(
+                "artefact",
+                Markup(
+                    f"<h3>Your Task</h3>"
+                    f"<p>Please reproduce the colors for a peer. They will read multiple proposals and decide which is most likely correct. </p>"
+                ),
+                time_estimate=120,
+                bot_response=lambda: self.context["original"]
+            )
+
+        return None
+
+    def show_trial(self, experiment, participant):
+        generation = self.definition["generation"]
+
+        if generation == 0:
+            info_page = self.first_trial()
+        else:
+            info_page = self.other_trial()
+
+        input_page = self.input_page()
 
         return [info_page, input_page]
 
@@ -160,35 +318,67 @@ class SelectTrial(SelectTrialMixin, ImitationChainTrial):
     time_estimate = 5
 
     def show_trial(self, experiment, participant):
-        stories = self.get_all_targets()
-        return ChoicePage(
-            "choice",
-            Markup(
-                "<h3>Choose the Best Version</h3>"
-                "<p>Please choose the story that seems most faithful to the original:</p><ul>"
-                + "\n".join(
-                    [
-                        f"<li><strong>Version {i+1}:</strong> {self.get_target_answer(story)}</li>"
-                        for i, story in enumerate(stories)
-                    ]
-                )
-                + "</ul>"
-            ),
-            stories=stories,
-            bot_response=lambda: random.choice(self.targets),
-        )
+        artefact_type = self.context["artefact_type"]
+
+        if artefact_type == 'text':
+            artefacts = self.get_all_targets()
+            return ChoicePage(
+                "choice",
+                Markup(
+                    "<h3>Choose the Best Version</h3>"
+                    "<p>Please choose the story that seems most faithful to the original:</p>"
+                    "<ul>"
+                    + "\n".join(
+                        [
+                            f"<li><strong>Version {i + 1}:</strong> {self.get_target_answer(artefact)}</li>"
+                            for i, artefact in enumerate(artefacts)
+                        ]
+                    )
+                    + "</ul>"
+                ),
+                artefacts=artefacts,
+                bot_response=lambda: random.choice(self.targets),
+            )
+        elif artefact_type == 'colors':
+            artefacts = self.get_all_targets()
+
+            return ChoicePage(
+                "choice",
+                Markup(
+                    "<h3>Choose the Best Version</h3>"
+                    "<p>Please choose the story that seems most faithful to the original:</p>"
+                    "<ul>"
+                    + "\n".join(
+                        [
+                            f"<li>{ColorArtefact(self.get_target_answer(artefact)['selected_colors']).html()}</li>"
+                            for i, artefact in enumerate(artefacts)
+                        ]
+                    )
+                    + "</ul>"
+                ),
+                artefacts=artefacts,
+                bot_response=lambda: random.choice(self.targets),
+            )
+
+        return None
 
 
 class CreateAndRateTrialMaker(CreateAndRateTrialMakerMixin, ImitationChainTrialMaker):
     pass
 
 
-start_nodes = [StoryNode(story) for story in stories]
+story_nodes = [ArtefactNode(artefact=story, artefact_type="text") for story in stories]
+color_nodes = [
+    ArtefactNode(ColorArtefact(n=10).colors, artefact_type="colors") for i in range(N_COLORLISTS)
+]
+
+# nodes = story_nodes + color_nodes
+nodes = color_nodes
 
 create_and_rate = CreateAndRateTrialMaker(
-    n_creators=2,
+    n_creators=N_CREATORS_PER_GENERATION,
     n_raters=1,
-    node_class=StoryNode,
+    node_class=ArtefactNode,
     creator_class=CreateTrial,
     rater_class=SelectTrial,
     include_previous_iteration=False,
@@ -198,10 +388,10 @@ create_and_rate = CreateAndRateTrialMaker(
     # trial_maker params
     id_="create_and_rate_trial_maker",
     chain_type="across",
-    expected_trials_per_participant=len(start_nodes),
-    max_trials_per_participant=len(start_nodes),
-    start_nodes=start_nodes,
-    chains_per_experiment=len(start_nodes),
+    expected_trials_per_participant=len(nodes),
+    max_trials_per_participant=len(nodes),
+    start_nodes=nodes,
+    chains_per_experiment=len(nodes),
     balance_across_chains=False,
     check_performance_at_end=True,
     check_performance_every_trial=False,
