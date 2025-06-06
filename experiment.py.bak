@@ -1,0 +1,271 @@
+# pylint: disable=unused-import,abstract-method,unused-argument
+
+import random
+import re
+from statistics import mean
+import pandas as pd
+
+import psynet.experiment
+from psynet.bot import Bot
+from psynet.modular_page import ModularPage, Prompt, TextControl, PushButtonControl
+from psynet.page import InfoPage, Markup
+from psynet.timeline import FailedValidation, Timeline
+from psynet.trial.imitation_chain import (
+    ImitationChainNetwork,
+    ImitationChainNode,
+    ImitationChainTrial,
+    ImitationChainTrialMaker,
+)
+from psynet.trial import Node
+from psynet.utils import get_logger
+
+logger = get_logger()
+
+
+class InputPage(ModularPage):
+    def __init__(self, label: str, prompt: str, time_estimate: float, bot_response):
+        super().__init__(
+            label,
+            Prompt(prompt),
+            control=TextControl(
+                block_copy_paste=True,
+                bot_response=bot_response,
+            ),
+            time_estimate=time_estimate,
+        )
+
+    def format_answer(self, raw_answer, **kwargs):
+        try:
+            assert len(raw_answer.strip()) > 0
+        except (ValueError, AssertionError):
+            return "INVALID_RESPONSE"
+
+        return raw_answer
+
+    def validate(self, response, **kwargs):
+        if response.answer == "INVALID_RESPONSE":
+            return FailedValidation("Please enter a response.")
+        return None
+
+
+class ChoicePage(ModularPage):
+    def __init__(self, label: str, prompt: str, stories: list, bot_response):
+        super().__init__(
+            label,
+            Prompt(prompt),
+            PushButtonControl(
+                choices=stories,
+                labels=[f"Story {i+1}" for i in range(len(stories))],
+                arrange_vertically=True,
+                bot_response=bot_response,
+            ),
+            time_estimate=30,
+        )
+
+
+class CustomTrial(ImitationChainTrial):
+    time_estimate = 2 + 3
+
+    def show_trial(self, experiment, participant):
+        history = self.definition.get("history", [])
+
+        # Check if we should be in receiver mode
+        is_receiver_mode = self.definition.get("next_round_type") == "receiver"
+
+        if is_receiver_mode:
+            return self.receiver_trial()
+        else:
+            return self.signaler_trial()
+
+    def signaler_trial(self):
+        """Signaler trial - shows both original story and current version to reproduce"""
+        original_story = self.definition.get(
+            "original_story", self.definition["artefact"]
+        )
+        current_story = self.definition["artefact"]
+        history = self.definition.get("history", [])
+
+        # Determine if this is generation 0 or later
+        generation = self.definition.get("generation", 0)
+
+        if generation == 0:
+            # First generation - only show original
+            page_1 = InfoPage(
+                Markup(
+                    f"<h3>Story Reproduction - Generation {generation}</h3>"
+                    f"<p>Please read and memorize this story:</p>"
+                    f"<div style='background: #e8f5e8; padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 4px solid #4CAF50;'>"
+                    f"<strong>Original Story:</strong><br>{original_story}"
+                    f"</div>"
+                ),
+                time_estimate=4,
+            )
+        else:
+            # Later generations - show both original and current version
+            page_1 = InfoPage(
+                Markup(
+                    f"<h3>Story Reproduction - Generation {generation}</h3>"
+                    f"<p>Please reproduce the original story.</p>"
+                    f"<div style='background: #e8f5e8; padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 4px solid #4CAF50;'>"
+                    f"<strong>Original Story:</strong><br>{original_story}"
+                    f"</div>"
+                    f"<div style='background: #fff3cd; padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 4px solid #ffc107;'>"
+                    f"<strong>Last winning story (chosen by a participant):</strong><br>{current_story}"
+                    f"</div>"
+                ),
+                time_estimate=6,
+            )
+
+        page_2 = InputPage(
+            "artefact",
+            Markup(
+                f"<h3>Your Task</h3>"
+                f"<p>Please reproduce the story for a peer. They will read multiple proposals and decide which is most likely correct. </p>"
+            ),
+            time_estimate=120,
+            bot_response=lambda: current_story,
+        )
+
+        return [page_1, page_2]
+
+    def receiver_trial(self):
+        """Receiver trial - select the best story from the last 3"""
+        history = self.definition.get("history", [])
+        original_story = self.definition.get(
+            "original_story", self.definition["artefact"]
+        )
+
+        # Get the last 3 stories for selection
+        last_three_stories = history[-3:] if len(history) >= 3 else history
+
+        if len(last_three_stories) < 3:
+            return self.signaler_trial()
+
+        page_1 = InfoPage(
+            Markup(
+                f"<h3>Story Selection Task</h3>"
+                f"<p>You will see three versions of a story. Select the version that you think is closest to the original story.</p>"
+            ),
+            time_estimate=5,
+        )
+
+        page_2 = ChoicePage(
+            "artefact_choice",
+            Markup(
+                "<h3>Choose the Best Version</h3>"
+                "<p>Please choose the story that seems most faithful to the original:</p><ul>"
+                + "\n".join(
+                    [
+                        f"<li><strong>Version {i+1}:</strong> {story}</li>"
+                        for i, story in enumerate(last_three_stories)
+                    ]
+                )
+                + "</ul>"
+            ),
+            stories=last_three_stories,
+            bot_response=lambda: random.choice(last_three_stories),
+        )
+
+        return [page_1, page_2]
+
+
+class CustomNetwork(ImitationChainNetwork):
+    pass
+
+
+stories = pd.read_csv("stories.csv")["Story"].tolist()
+
+
+class CustomNode(ImitationChainNode):
+    def create_initial_seed(self, experiment=None, participant=None):
+        original_story = random.choice(stories)
+        return {
+            "artefact": original_story,
+            "original_story": original_story,
+            "history": [],
+            "next_round_type": "signaller",
+            "generation": 0,
+            "choices": [],
+        }
+
+    def summarize_trials(self, trials: list, experiment, participant):
+        history = self.definition.get("history", [])
+        original_story = self.definition.get("original_story")
+        choices = self.definition.get("choices", [])
+
+        # Check if the last trial was a receiver trial
+        if self.definition.get("next_round_type") == "receiver":
+            selected_story = trials[-1].answer
+            generation = self.definition.get("generation", 0) + 1
+
+            choices += (generation, selected_story)
+
+            return {
+                "artefact": selected_story,  # This becomes the new current version
+                "original_story": original_story,  # Always preserve the original
+                "history": history,
+                "next_round_type": "signaller",
+                "generation": generation,
+                "choices": choices,
+            }
+        else:
+            # These were signaler trials - add all responses to history
+            new_responses = [
+                trial.answer for trial in trials if trial.answer != "INVALID_RESPONSE"
+            ]
+            new_history = history + new_responses
+
+            # Keep the current artefact (the version they were trying to reproduce)
+            current_artefact = self.definition["artefact"]
+
+            return {
+                "artefact": current_artefact,
+                "original_story": original_story,  # Always preserve the original
+                "history": new_history,
+                "next_round_type": (
+                    "receiver" if len(new_history) % 3 == 0 else "signaller"
+                ),
+                "generation": self.definition.get("generation", 0),
+                "choices": choices,
+            }
+
+
+start_nodes = [CustomNode() for i in range(1)]
+print([node.definition for node in start_nodes])
+
+
+class CustomTrialMaker(ImitationChainTrialMaker):
+    response_timeout_sec = 300
+    check_timeout_interval_sec = 1
+
+
+class Exp(psynet.experiment.Experiment):
+    label = "Runaway selection"
+    initial_recruitment_size = 1
+
+    timeline = Timeline(
+        CustomTrialMaker(
+            id_="imitation_chain",
+            network_class=CustomNetwork,
+            trial_class=CustomTrial,
+            node_class=CustomNode,
+            chain_type="across",
+            max_nodes_per_chain=15,
+            max_trials_per_participant=10,
+            expected_trials_per_participant=1,
+            chains_per_participant=3,
+            chains_per_experiment=3,
+            trials_per_node=1,
+            balance_across_chains=True,
+            check_performance_at_end=False,
+            check_performance_every_trial=False,
+            recruit_mode="n_participants",
+            target_n_participants=20,
+            allow_revisiting_networks_in_across_chains=False,
+            # start_nodes=start_nodes,
+        ),
+        InfoPage("You finished the experiment!", time_estimate=0),
+    )
+
+    def test_check_bot(self, bot: Bot, **kwargs):
+        assert len(bot.alive_trials) >= 1
