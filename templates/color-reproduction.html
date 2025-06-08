@@ -104,11 +104,7 @@ class ColorReproductionInterface {
     }
 
     getResponseData() {
-        return {
-            selected_colors: this.selectedColors,
-            total_time: Date.now() - this.startTime,
-            completion_status: this.selectedColors.length >= this.numColors ? 'complete' : 'partial'
-        };
+        return this.selectedColors;
     }
 }
 
