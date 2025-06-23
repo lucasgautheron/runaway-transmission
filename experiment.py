@@ -70,18 +70,26 @@ class ArtefactNode(ChainNode, CreateAndRateNodeMixin):
         return seed
 
     def summarize_trials(self, trials, experiment, participant):
+        logger.info(f"Summarizing trials for node {self.id}")
         trial_maker = self.trial_maker
         all_rate_trials = trial_maker.rater_class.query.filter_by(
             node_id=self.id, failed=False, finalized=True
         ).all()
+
+        last_generation = max([trial.definition["generation"] for trial in all_rate_trials])
+        all_rate_trials = [trial for trial in all_rate_trials if trial.definition["generation"] == last_generation]
+
         all_targets = all_rate_trials[0].get_all_targets()
 
-        # Use indices as keys - works for any data type
         count_dict = {i: 0 for i in range(len(all_targets))}
 
         for trial in trials:
+            if not isinstance(trial, SelectTrialMixin):
+                continue
+
             # Find which target matches this trial's answer
             for i, target in enumerate(all_targets):
+                print(trial.answer, target.answer)
                 if trial.answer == target.answer:
                     count_dict[i] += 1
                     break
@@ -94,15 +102,13 @@ class ArtefactNode(ChainNode, CreateAndRateNodeMixin):
         definition["generation"] += 1
         definition["last_choice"] = last_choice
 
-        print(definition)
-
         return definition
 
 
 class StoryNode(ArtefactNode):
     """Node class specifically for story artefacts"""
 
-    def __init__(self, story_text: str, **kwargs):
+    def __init__(self, story_text: str = None, **kwargs):
         super().__init__(artefact=story_text, **kwargs)
         self.story_text = story_text
 
@@ -228,7 +234,7 @@ class ColorReproductionControl(Control):
     macro = "color_picker_control"
     external_template = "color-reproduction.html"
 
-    def __init__(self, num_colors=10, picker_type="wheel_sliders", bot_response=None):
+    def __init__(self, num_colors=16, picker_type="wheel_sliders", bot_response=None):
         super().__init__(bot_response=bot_response)  # Pass bot_response to parent Control
         self.num_colors = num_colors
         self.picker_type = picker_type
@@ -281,177 +287,58 @@ class ColorsInputPage(ModularPage):
         return None
 
 
-class ChoicePage(ModularPage):
-    def __init__(self, label: str, prompt: str, artefacts: list, bot_response):
-        super().__init__(
-            label,
-            Prompt(prompt),
-            PushButtonControl(
-                choices=artefacts,
-                labels=[f"Version {i + 1}" for i in range(len(artefacts))],
-                arrange_vertically=True,
-                bot_response=bot_response,
-            ),
-            time_estimate=30,
-        )
+# ============================================================================
+# SEPARATED TRIAL CLASSES - STORIES
+# ============================================================================
 
-
-class CreateTrial(CreateTrialMixin, ImitationChainTrial):
+class StoryCreateTrial(CreateTrialMixin, ImitationChainTrial):
+    """Trial class specifically for story creation tasks"""
     time_estimate = 5
 
-    def get_current_node(self):
-        """Helper method to get the current node - implement based on your trial structure"""
-        # This would depend on how you access the current node in your trial system
-        # You might need to adapt this based on your actual implementation
-        return getattr(self, 'node', None)
-
-    def get_info_page_for_story(self, story_node: StoryNode):
-        """Create info page for story reproduction"""
-        generation = self.definition.get("generation", 0)
-
-        if generation == 0:
-            return InfoPage(
-                Markup(
-                    f"<h3>Story Reproduction</h3>"
-                    f"<p>Please read and memorize this story:</p>"
-                    f"<div style='background: #e8f5e8; padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 4px solid #4CAF50;'>"
-                    f"<strong>Original Story:</strong><br>{story_node.get_display_text()}"
-                    f"</div>"
-                ),
-                time_estimate=self.time_estimate,
-            )
-        else:
-            return InfoPage(
-                Markup(
-                    f"<h3>Story Reproduction - Generation {generation}</h3>"
-                    f"<p>Please reproduce the original story.</p>"
-                    f"<div style='background: #e8f5e8; padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 4px solid #4CAF50;'>"
-                    f"<strong>Original Story:</strong><br>{story_node.get_display_text()}"
-                    f"</div>"
-                    f"<div style='background: #fff3cd; padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 4px solid #ffc107;'>"
-                    f"<strong>Last winning story (chosen by a participant):</strong><br>{self.definition['last_choice']}"
-                    f"</div>"
-                ),
-                time_estimate=self.time_estimate,
-            )
-
-    def get_info_page_for_colors(self, color_node: ColorListNode):
-        """Create info page for color reproduction"""
-        generation = self.definition.get("generation", 0)
-
-        if generation == 0:
-            return InfoPage(
-                Markup(
-                    f"<h3>Colors Reproduction</h3>"
-                    f"<p>Please read and memorize the following colors:</p>"
-                    f"<div style='padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 4px solid #4CAF50;'>"
-                    f"<strong>Original colors:</strong><br>{color_node.html()}"
-                    f"</div>"
-                ),
-                time_estimate=self.time_estimate,
-            )
-        else:
-            # Use utility function instead of creating a new node
-            return InfoPage(
-                Markup(
-                    f"<h3>Colors Reproduction - Generation {generation}</h3>"
-                    f"<p>Please read and memorize the following colors:</p>"
-                    f"<div style='padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 4px solid #4CAF50;'>"
-                    f"<strong>Original colors:</strong><br>{color_node.html()}"
-                    f"</div>"
-                    f"<div style='padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 4px solid #ffc107;'>"
-                    f"<strong>Last winning colors (chosen by a participant):</strong><br>{colors_to_html(self.definition['last_choice'])}"
-                    f"</div>"
-                ),
-                time_estimate=self.time_estimate,
-            )
-
     def first_trial(self):
-        print(self.context)
-
-        if self.context["artefact_type"] == "text":
-            return InfoPage(
-                Markup(
-                    f"<h3>Story Reproduction</h3>"
-                    f"<p>Please read and memorize this story:</p>"
-                    f"<div style='background: #e8f5e8; padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 4px solid #4CAF50;'>"
-                    f"<strong>Original Story:</strong><br>{self.context['original']}"
-                    f"</div>"
-                ),
-                time_estimate=self.time_estimate,
-            )
-        elif self.context["artefact_type"] == "colors":
-            return InfoPage(
-                Markup(
-                    f"<h3>Colors Reproduction</h3>"
-                    f"<p>Please read and memorize the following colors:</p>"
-                    f"<div style='padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 4px solid #4CAF50;'>"
-                    f"<strong>Original colors:</strong><br>{colors_to_html(self.context['original'])}"
-                    f"</div>"
-                ),
-                time_estimate=self.time_estimate,
-            )
-        return None
+        """First trial - show original story"""
+        return InfoPage(
+            Markup(
+                f"<h3>Story Reproduction</h3>"
+                f"<p>Please read and memorize this story:</p>"
+                f"<div style='background: #e8f5e8; padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 4px solid #4CAF50;'>"
+                f"<strong>Original Story:</strong><br>{self.context['original']}"
+                f"</div>"
+            ),
+            time_estimate=self.time_estimate,
+        )
 
     def other_trial(self):
+        """Subsequent trials - show original + last winning story"""
         generation = self.definition["generation"]
-
-        if self.context["artefact_type"] == "text":
-            return InfoPage(
-                Markup(
-                    f"<h3>Story Reproduction - Generation {generation}</h3>"
-                    f"<p>Please reproduce the original story.</p>"
-                    f"<div style='background: #e8f5e8; padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 4px solid #4CAF50;'>"
-                    f"<strong>Original Story:</strong><br>{self.context['original']}"
-                    f"</div>"
-                    f"<div style='background: #fff3cd; padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 4px solid #ffc107;'>"
-                    f"<strong>Last winning story (chosen by a participant):</strong><br>{self.definition['last_choice']}"
-                    f"</div>"
-                ),
-                time_estimate=self.time_estimate,
-            )
-        elif self.context["artefact_type"] == "colors":
-            return InfoPage(
-                Markup(
-                    f"<h3>Colors Reproduction</h3>"
-                    f"<p>Please read and memorize the following colors:</p>"
-                    f"<div style='padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 4px solid #4CAF50;'>"
-                    f"<strong>Original colors:</strong><br>{colors_to_html(self.context['original'])}"
-                    f"</div>"
-                    f"<div style='padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 4px solid #ffc107;'>"
-                    f"<strong>Last winning colors (chosen by a participant):</strong><br>{colors_to_html(self.definition['last_choice'])}"
-                    f"</div>"
-                ),
-                time_estimate=self.time_estimate,
-            )
-
-        return None
+        return InfoPage(
+            Markup(
+                f"<h3>Story Reproduction - Generation {generation}</h3>"
+                f"<p>Please reproduce the original story.</p>"
+                f"<div style='background: #e8f5e8; padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 4px solid #4CAF50;'>"
+                f"<strong>Original Story:</strong><br>{self.context['original']}"
+                f"</div>"
+                f"<div style='background: #fff3cd; padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 4px solid #ffc107;'>"
+                f"<strong>Last winning story (chosen by a participant):</strong><br>{self.definition['last_choice']}"
+                f"</div>"
+            ),
+            time_estimate=self.time_estimate,
+        )
 
     def input_page(self):
-        if self.context["artefact_type"] == "text":
-            return StoryInputPage(
-                "artefact",
-                Markup(
-                    f"<h3>Your Task</h3>"
-                    f"<p>Please reproduce the story for a peer. They will read multiple proposals and decide which is most likely correct. </p>"
-                ),
-                time_estimate=120,
-                bot_response=lambda: self.context["original"],
-            )
-        elif self.context["artefact_type"] == "colors":
-            return ColorsInputPage(
-                "artefact",
-                Markup(
-                    f"<h3>Your Task</h3>"
-                    f"<p>Please reproduce the colors for a peer. They will read multiple proposals and decide which is most likely correct. </p>"
-                ),
-                time_estimate=120,
-                bot_response=lambda: self.context["original"]
-            )
-
-        return None
+        """Input page for story creation"""
+        return StoryInputPage(
+            "artefact",
+            Markup(
+                f"<h3>Your Task</h3>"
+                f"<p>Please reproduce the story for a peer. They will read multiple proposals and decide which is most likely correct.</p>"
+            ),
+            time_estimate=120,
+            bot_response=lambda: self.context["original"],
+        )
 
     def show_trial(self, experiment, participant):
+        """Show the complete story creation trial"""
         generation = self.definition["generation"]
 
         if generation == 0:
@@ -460,66 +347,154 @@ class CreateTrial(CreateTrialMixin, ImitationChainTrial):
             info_page = self.other_trial()
 
         input_page = self.input_page()
-
         return [info_page, input_page]
 
 
-class SelectTrial(SelectTrialMixin, ImitationChainTrial):
+class StorySelectTrial(SelectTrialMixin, ImitationChainTrial):
+    """Trial class specifically for story selection tasks"""
     time_estimate = 5
 
     def show_trial(self, experiment, participant):
-        artefact_type = self.context["artefact_type"]
+        """Show story selection trial"""
+        artefacts = self.get_all_targets()
 
-        if artefact_type == 'text':
-            artefacts = self.get_all_targets()
-            return ChoicePage(
-                "choice",
-                Markup(
-                    "<h3>Choose the Best Version</h3>"
-                    "<p>Please choose the story that seems most faithful to the original:</p>"
-                    "<ul>"
-                    + "\n".join(
-                        [
-                            f"<li><strong>Version {i + 1}:</strong> {self.get_target_answer(artefact)}</li>"
-                            for i, artefact in enumerate(artefacts)
-                        ]
-                    )
-                    + "</ul>"
-                ),
-                artefacts=artefacts,
+        return ModularPage(
+            "choice",
+            Prompt(Markup(
+                "<h3>Choose the Best Version</h3>"
+                "<p>Please choose the story that seems most faithful to the original:</p>"
+                "<ul>"
+                + "\n".join([
+                    f"<li><strong>Version {i + 1}:</strong> {self.get_target_answer(artefact)}</li>"
+                    for i, artefact in enumerate(artefacts)
+                ])
+                + "</ul>"
+            )),
+            control=PushButtonControl(
+                choices=artefacts,
+                labels=[f"Version {i + 1}" for i in range(len(artefacts))],
+                arrange_vertically=True,
                 bot_response=lambda: random.choice(self.targets),
-            )
-        elif artefact_type == 'colors':
-            artefacts = self.get_all_targets()
-            for i, artefact in enumerate(artefacts):
-                print(self.get_target_answer(artefact))
+            ),
+            time_estimate=30,
+        )
 
-            return ChoicePage(
-                "choice",
-                Markup(
-                    "<h3>Choose the Best Version</h3>"
-                    "<p>Please choose the colors that seem most faithful to the original:</p>"
-                    "<ul>"
-                    + "\n".join(
-                        [
-                            f"<li>{colors_to_html(self.get_target_answer(artefact))}</li>"
-                            for i, artefact in enumerate(artefacts)
-                        ]
-                    )
-                    + "</ul>"
-                ),
-                artefacts=artefacts,
+
+# ============================================================================
+# SEPARATED TRIAL CLASSES - COLORS
+# ============================================================================
+
+class ColorCreateTrial(CreateTrialMixin, ImitationChainTrial):
+    """Trial class specifically for color creation tasks"""
+    time_estimate = 5
+
+    def first_trial(self):
+        """First trial - show original colors"""
+        return InfoPage(
+            Markup(
+                f"<h3>Colors Reproduction</h3>"
+                f"<p>Please read and memorize the following colors:</p>"
+                f"<div style='padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 4px solid #4CAF50;'>"
+                f"<strong>Original colors:</strong><br>{colors_to_html(self.context['original'])}"
+                f"</div>"
+            ),
+            time_estimate=self.time_estimate,
+        )
+
+    def other_trial(self):
+        """Subsequent trials - show original + last winning colors"""
+        generation = self.definition["generation"]
+        return InfoPage(
+            Markup(
+                f"<h3>Colors Reproduction - Generation {generation}</h3>"
+                f"<p>Please read and memorize the following colors:</p>"
+                f"<div style='padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 4px solid #4CAF50;'>"
+                f"<strong>Original colors:</strong><br>{colors_to_html(self.context['original'])}"
+                f"</div>"
+                f"<div style='padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 4px solid #ffc107;'>"
+                f"<strong>Last winning colors (chosen by a participant):</strong><br>{colors_to_html(self.definition['last_choice'])}"
+                f"</div>"
+            ),
+            time_estimate=self.time_estimate,
+        )
+
+    def input_page(self):
+        """Input page for color creation"""
+        return ColorsInputPage(
+            "artefact",
+            Markup(
+                f"<h3>Your Task</h3>"
+                f"<p>Please reproduce the colors for a peer. They will read multiple proposals and decide which is most likely correct.</p>"
+            ),
+            time_estimate=120,
+            bot_response=lambda: self.context["original"]
+        )
+
+    def show_trial(self, experiment, participant):
+        """Show the complete color creation trial"""
+        generation = self.definition["generation"]
+
+        if generation == 0:
+            info_page = self.first_trial()
+        else:
+            info_page = self.other_trial()
+
+        input_page = self.input_page()
+        return [info_page, input_page]
+
+
+class ColorSelectTrial(SelectTrialMixin, ImitationChainTrial):
+    """Trial class specifically for color selection tasks"""
+    time_estimate = 5
+
+    def show_trial(self, experiment, participant):
+        print("Show select trial")
+        """Show color selection trial"""
+        artefacts = self.get_all_targets()
+
+        for i, artefact in enumerate(artefacts):
+            print(f"choice {i}: {self.get_target_answer(artefact)}")
+
+        return ModularPage(
+            "choice",
+            Prompt(Markup(
+                "<h3>Choose the Best Version</h3>"
+                "<p>Please choose the colors that seem most faithful to the original:</p>"
+                "<ul>"
+                + "\n".join([
+                    f"<li>{colors_to_html(self.get_target_answer(artefact))}</li>"
+                    for i, artefact in enumerate(artefacts)
+                ])
+                + "</ul>"
+            )),
+            control=PushButtonControl(
+                choices=artefacts,
+                labels=[f"Version {i + 1}" for i in range(len(artefacts))],
+                arrange_vertically=True,
                 bot_response=lambda: random.choice(self.targets),
-            )
+            ),
+            time_estimate=30,
+        )
 
-        return None
 
+# ============================================================================
+# TRIAL MAKERS
+# ============================================================================
 
-class CreateAndRateTrialMaker(CreateAndRateTrialMakerMixin, ImitationChainTrialMaker):
+class StoryTrialMaker(CreateAndRateTrialMakerMixin, ImitationChainTrialMaker):
+    """Trial maker specifically for story experiments"""
     pass
 
 
-# Factory functions for creating nodes
+class ColorTrialMaker(CreateAndRateTrialMakerMixin, ImitationChainTrialMaker):
+    """Trial maker specifically for color experiments"""
+    pass
+
+
+# ============================================================================
+# FACTORY FUNCTIONS AND SETUP
+# ============================================================================
+
 def create_story_nodes(stories_list: List[str]) -> List[StoryNode]:
     """Create story nodes from a list of story texts"""
     return [StoryNode(story) for story in stories_list]
@@ -534,41 +509,101 @@ def create_color_nodes(n_colorlists: int, colors_per_list: int = 10) -> List[Col
 story_nodes = create_story_nodes(stories)
 color_nodes = create_color_nodes(N_COLORLISTS, 10)
 
-# You can now use either story_nodes, color_nodes, or both
-# nodes = story_nodes + color_nodes
-nodes = color_nodes
-
 # Validation example
-for node in nodes:
+for node in story_nodes + color_nodes:
     if not node.validate_artefact():
         logger.warning(f"Invalid artefact in node: {node}")
 
-create_and_rate = CreateAndRateTrialMaker(
-    n_creators=N_CREATORS_PER_GENERATION,
-    n_raters=1,
-    node_class=ArtefactNode,  # Base class - actual nodes will be StoryNode or ColorListNode
-    creator_class=CreateTrial,
-    rater_class=SelectTrial,
-    include_previous_iteration=False,
-    rate_mode="select",
-    target_selection_method="all",
-    verbose=True,
-    # trial_maker params
-    id_="create_and_rate_trial_maker",
-    chain_type="across",
-    expected_trials_per_participant=len(nodes),
-    max_trials_per_participant=len(nodes),
-    start_nodes=nodes,
-    chains_per_experiment=len(nodes),
-    balance_across_chains=False,
-    check_performance_at_end=True,
-    check_performance_every_trial=False,
-    propagate_failure=False,
-    recruit_mode="n_trials",
-    target_n_participants=None,
-    wait_for_networks=False,
-    max_nodes_per_chain=N_GENERATIONS,
-)
+# ============================================================================
+# EXPERIMENT SETUP
+# ============================================================================
+
+# Choose which type of experiment to run
+EXPERIMENT_TYPE = "colors"  # Change to "stories" or "mixed"
+
+if EXPERIMENT_TYPE == "stories":
+    nodes = story_nodes
+    trial_maker = StoryTrialMaker(
+        n_creators=N_CREATORS_PER_GENERATION,
+        n_raters=1,
+        node_class=StoryNode,
+        creator_class=StoryCreateTrial,
+        rater_class=StorySelectTrial,
+        include_previous_iteration=False,
+        rate_mode="select",
+        target_selection_method="all",
+        verbose=True,
+        id_="story_trial_maker",
+        chain_type="across",
+        expected_trials_per_participant=len(nodes),
+        max_trials_per_participant=len(nodes),
+        start_nodes=nodes,
+        chains_per_experiment=len(nodes),
+        balance_across_chains=False,
+        check_performance_at_end=True,
+        check_performance_every_trial=False,
+        propagate_failure=False,
+        recruit_mode="n_trials",
+        target_n_participants=None,
+        wait_for_networks=False,
+        max_nodes_per_chain=N_GENERATIONS,
+    )
+elif EXPERIMENT_TYPE == "colors":
+    nodes = color_nodes
+    trial_maker = ColorTrialMaker(
+        n_creators=N_CREATORS_PER_GENERATION,
+        n_raters=1,
+        node_class=ColorListNode,
+        creator_class=ColorCreateTrial,
+        rater_class=ColorSelectTrial,
+        include_previous_iteration=False,
+        rate_mode="select",
+        target_selection_method="all",
+        verbose=True,
+        id_="color_trial_maker",
+        chain_type="across",
+        expected_trials_per_participant=len(nodes),
+        max_trials_per_participant=len(nodes),
+        start_nodes=nodes,
+        chains_per_experiment=len(nodes),
+        balance_across_chains=False,
+        check_performance_at_end=True,
+        check_performance_every_trial=False,
+        propagate_failure=False,
+        recruit_mode="n_trials",
+        target_n_participants=None,
+        wait_for_networks=False,
+        max_nodes_per_chain=N_GENERATIONS,
+    )
+else:  # mixed
+    nodes = story_nodes + color_nodes
+    # For mixed experiments, you might want to create a more complex setup
+    # This is a simplified version - you may need to adjust based on your needs
+    trial_maker = StoryTrialMaker(  # You could create a MixedTrialMaker if needed
+        n_creators=N_CREATORS_PER_GENERATION,
+        n_raters=1,
+        node_class=ArtefactNode,
+        creator_class=StoryCreateTrial,  # This won't work well for mixed - consider creating unified trials
+        rater_class=StorySelectTrial,
+        include_previous_iteration=False,
+        rate_mode="select",
+        target_selection_method="all",
+        verbose=True,
+        id_="mixed_trial_maker",
+        chain_type="across",
+        expected_trials_per_participant=len(nodes),
+        max_trials_per_participant=len(nodes),
+        start_nodes=nodes,
+        chains_per_experiment=len(nodes),
+        balance_across_chains=False,
+        check_performance_at_end=True,
+        check_performance_every_trial=False,
+        propagate_failure=False,
+        recruit_mode="n_trials",
+        target_n_participants=None,
+        wait_for_networks=False,
+        max_nodes_per_chain=N_GENERATIONS,
+    )
 
 
 class Exp(psynet.experiment.Experiment):
@@ -577,6 +612,6 @@ class Exp(psynet.experiment.Experiment):
 
     timeline = Timeline(
         NoConsent(),
-        create_and_rate,
+        trial_maker,
         SuccessfulEndPage(),
     )
