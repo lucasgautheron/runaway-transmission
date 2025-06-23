@@ -122,12 +122,20 @@ class StoryNode(ArtefactNode):
         return f"StoryNode('{preview}')"
 
 
+class GridNode(ArtefactNode):
+    def __init__(self, grid: List[List[int]], **kwargs):
+        super().__init__(artefact=grid, **kwargs)
+        self.grid = grid
+
+    def random(self, n):
+        return np.random.randint(0, 1, size=(n, n)).tolist()
+
 class ColorListNode(ArtefactNode):
     """Node class specifically for color list artefacts"""
 
     def __init__(self, colors: List[List[int]] = None, n: int = 10, **kwargs):
         if colors is None:
-            colors = self._generate_random_colors(n)
+            colors = self.random(n)
 
         # Validate colors during initialization
         self._validate_colors_format(colors)
@@ -139,7 +147,7 @@ class ColorListNode(ArtefactNode):
     def get_artefact_type(self):
         return "colors"
 
-    def _generate_random_colors(self, n: int):
+    def random(self, n: int):
         """Generate n random RGB colors"""
         return np.random.randint(0, 256, size=(n, 3)).tolist()
 
