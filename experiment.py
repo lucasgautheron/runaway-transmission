@@ -812,7 +812,7 @@ for node in story_nodes + color_nodes:
 # ============================================================================
 
 # Choose which type of experiment to run
-EXPERIMENT_TYPE = "colors"  # Change to "stories" or "mixed"
+EXPERIMENT_TYPE = "grids"  # Change to "stories" or "mixed"
 
 if EXPERIMENT_TYPE == "stories":
     nodes = story_nodes
