@@ -2,7 +2,7 @@
 
 from markupsafe import Markup
 import psynet.experiment
-from psynet.consent import NoConsent
+from psynet.consent import NoConsent, MainConsent
 from psynet.modular_page import Prompt, ModularPage, PushButtonControl, Control
 from psynet.page import InfoPage, SuccessfulEndPage
 from psynet.timeline import FailedValidation, Timeline
@@ -28,8 +28,8 @@ from typing import List
 
 logger = get_logger()
 
-N_CREATORS_PER_GENERATION = 2
-N_GRIDS = 2
+N_CREATORS_PER_GENERATION = 3
+N_GRIDS = 5
 N_GENERATIONS = 10
 
 
@@ -190,7 +190,7 @@ class GridNode(ArtefactNode):
         truth = np.array(truth) * 1
         attempt = np.array(attempt) * 1
 
-        return ((truth == 1) & (attempt == 1)).mean()
+        return (truth == attempt).sum()
 
     def __repr__(self):
         return f"GridNode({self.size}x{self.size})"
@@ -200,10 +200,21 @@ class GridReproductionControl(Control):
     macro = "grid_reproduction_control"
     external_template = "grid-reproduction.html"
 
-    def __init__(self, grid_size=8, prefill_grid=None):
-        super().__init__()
+    def __init__(self, grid_size=8, prefill_grid=None, **kwargs):
         self.grid_size = grid_size
         self.prefill_grid = prefill_grid
+        super().__init__(**kwargs, bot_response = self.bot_response())
+
+    def bot_response(self):
+        if self.prefill_grid:
+            grid = np.array(self.prefill_grid)
+        else:
+            grid = np.random.choice([0, 1], size=(self.grid_size, self.grid_size), p=[0.8, 0.2])
+
+        x,y  = np.random.choice(self.grid_size, 2)
+        grid[x,y] = 1 - grid[x,y]
+
+        return grid.tolist()
 
     @property
     def metadata(self):
@@ -263,6 +274,10 @@ class GridCreateTrial(CreateTrialMixin, ImitationChainTrial):
     """Trial class specifically for grid creation tasks"""
     time_estimate = 5
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.var.accuracy = None
+
     def trial(self):
         """First trial - show original grid"""
         return InfoPage(
@@ -304,7 +319,7 @@ class GridCreateTrial(CreateTrialMixin, ImitationChainTrial):
             text,
             time_estimate=120,
             prefill_grid=prefill_grid,
-            grid_size=grid_size
+            grid_size=grid_size,
         )
 
     def show_trial(self, experiment, participant):
@@ -314,10 +329,32 @@ class GridCreateTrial(CreateTrialMixin, ImitationChainTrial):
         input_page = self.input_page()
         return [info_page, input_page]
 
+    def show_feedback(self, experiment, participant):
+        if self.definition['generation'] == 0:
+            return
+
+        accuracy = GridNode.accuracy(self.context["original"], self.answer)
+        previous_accuracy = GridNode.accuracy(self.context["original"], self.definition['last_choice'])
+        delta = accuracy - previous_accuracy
+
+        if delta == 0:
+            return InfoPage("Accuracy unchanged!")
+        elif delta > 0:
+            plural = "s are" if delta > 1 else " is"
+            return InfoPage(f"Your proposal is more accurate ({delta} more cell{plural} correct)!")
+        else:
+            plural = "s" if delta < -1 else ""
+            return InfoPage(f"Your proposal is less accurate ({-delta} more error{plural})!")
+
 
 class GridSelectTrial(SelectTrialMixin, ImitationChainTrial):
     """Trial class specifically for grid selection tasks"""
     time_estimate = 5
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.var.success = None
+        self.var.accuracy = None
 
     def show_trial(self, experiment, participant):
         artefacts = self.get_all_targets()
@@ -325,8 +362,9 @@ class GridSelectTrial(SelectTrialMixin, ImitationChainTrial):
         return ModularPage(
             "choice",
             Prompt(Markup(
-                "<h3>Choose the Best Version</h3>"
-                "<p>Please choose the grid pattern that seems most faithful to the original:</p>"
+                "<h3>Choose the most accurate</h3>"
+                f"<p>{N_CREATORS_PER_GENERATION} participants have attempted to reproduce a grid from memory.</p>"
+                "<p>Without having seen the original grid, try and choose the proposal you believe to be its most accurate reproduction.</p>"
                 "<div style='display: flex; justify-content: center; gap: 20px; flex-wrap: wrap; margin: 20px 0;'>"
                 + "\n".join([
                     f"<div style='text-align: center;'><strong>Version {i + 1}:</strong><br>{grid_to_html(self.get_target_answer(artefact))}</div>"
@@ -369,6 +407,25 @@ class GridTrialMaker(CreateAndRateTrialMakerMixin, ImitationChainTrialMaker):
     def __init__(self, n_grids: int, grid_size: int = 10, *args, **kwargs):
         super().__init__(start_nodes=[GridNode(size=grid_size, random=True) for _ in range(n_grids)], *args, **kwargs)
 
+    def finalize_trial(self, answer, trial, experiment, participant):
+        super().finalize_trial(answer, trial, experiment, participant)
+
+        if isinstance(trial, SelectTrialMixin):
+            artefacts = trial.get_all_targets()
+
+            accuracy = dict()
+            for i, artefact in enumerate(artefacts):
+                accuracy[str(artefact)] = GridNode.accuracy(
+                    trial.get_target_answer(artefact),
+                    trial.context['original']
+                )
+
+            best = max(list(accuracy.values()))
+            trial.var.success = bool(accuracy[str(trial.answer)] == best)
+            trial.var.accuracy = int(accuracy[str(trial.answer)])
+
+        elif isinstance(trial, CreateTrialMixin):
+            trial.var.accuracy = int(GridNode.accuracy(trial.context["original"], trial.answer))
 
 # Experiment setup
 trial_maker = GridTrialMaker(
@@ -405,7 +462,7 @@ class Exp(psynet.experiment.Experiment):
     initial_recruitment_size = 1
 
     timeline = Timeline(
-        NoConsent(),
+        MainConsent(),
         trial_maker,
         SuccessfulEndPage(),
     )
