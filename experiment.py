@@ -290,14 +290,29 @@ class GridNode(ArtefactNode):
         return f"GridNode({self.size}x{self.size})"
 
 
+class StoryTextControl(TextControl):
+    """Extended TextControl that supports prefill text"""
+    external_template = "story-reproduction.html"
+
+    def __init__(self, prefill_text=None, **kwargs):
+        super().__init__(**kwargs, one_line=False)
+        self.prefill_text = "" if prefill_text is None else prefill_text
+
+    @property
+    def metadata(self):
+        metadata = super().metadata
+        metadata["prefill_text"] = self.prefill_text
+        return metadata
+
+
 class StoryInputPage(ModularPage):
-    def __init__(self, label: str, prompt: str, time_estimate: float, bot_response):
+    def __init__(self, label: str, prompt: str, time_estimate: float, prefill_text=None):
         super().__init__(
             label,
             Prompt(prompt),
-            control=TextControl(
+            control=StoryTextControl(
                 block_copy_paste=True,
-                bot_response=bot_response,
+                prefill_text=prefill_text,
             ),
             time_estimate=time_estimate,
         )
@@ -320,26 +335,28 @@ class ColorReproductionControl(Control):
     macro = "color_picker_control"
     external_template = "color-reproduction.html"
 
-    def __init__(self, num_colors=16, picker_type="wheel_sliders", bot_response=None):
-        super().__init__(bot_response=bot_response)  # Pass bot_response to parent Control
+    def __init__(self, num_colors=16, picker_type="wheel_sliders", prefill_colors=None):
+        super().__init__()
         self.num_colors = num_colors
         self.picker_type = picker_type
+        self.prefill_colors = prefill_colors
 
     @property
     def metadata(self):
         return {
             "num_colors": self.num_colors,
-            "picker_type": self.picker_type
+            "picker_type": self.picker_type,
+            "prefill_colors": self.prefill_colors
         }
 
 
 class ColorsInputPage(ModularPage):
-    def __init__(self, label: str, prompt: str, time_estimate: float, bot_response):
+    def __init__(self, label: str, prompt: str, time_estimate: float, prefill_colors=None):
         super().__init__(
             label,
             Prompt(prompt),
             control=ColorReproductionControl(
-                bot_response=bot_response  # Pass bot_response to the control, not the page
+                prefill_colors=prefill_colors
             ),
             time_estimate=time_estimate,
         )
@@ -377,25 +394,27 @@ class GridReproductionControl(Control):
     macro = "grid_reproduction_control"
     external_template = "grid-reproduction.html"
 
-    def __init__(self, grid_size=8, bot_response=None):
-        super().__init__(bot_response=bot_response)
+    def __init__(self, grid_size=8, prefill_grid=None):
+        super().__init__()
         self.grid_size = grid_size
+        self.prefill_grid = prefill_grid
 
     @property
     def metadata(self):
         return {
-            "grid_size": self.grid_size
+            "grid_size": self.grid_size,
+            "prefill_grid": self.prefill_grid
         }
 
 
 class GridInputPage(ModularPage):
-    def __init__(self, label: str, prompt: str, time_estimate: float, bot_response, grid_size: int = 8):
+    def __init__(self, label: str, prompt: str, time_estimate: float, prefill_grid=None, grid_size: int = 8):
         super().__init__(
             label,
             Prompt(prompt),
             control=GridReproductionControl(
                 grid_size=grid_size,
-                bot_response=bot_response
+                prefill_grid=prefill_grid
             ),
             time_estimate=time_estimate,
         )
@@ -437,7 +456,6 @@ class GridInputPage(ModularPage):
 # ============================================================================
 # SEPARATED TRIAL CLASSES - STORIES
 # ============================================================================
-
 class StoryCreateTrial(CreateTrialMixin, ImitationChainTrial):
     """Trial class specifically for story creation tasks"""
     time_estimate = 5
@@ -474,6 +492,14 @@ class StoryCreateTrial(CreateTrialMixin, ImitationChainTrial):
 
     def input_page(self):
         """Input page for story creation"""
+        generation = self.definition["generation"]
+
+        # For generation 0, start from scratch (no prefill); for generation > 0, start with last_choice
+        if generation == 0:
+            prefill_text = None  # No prefill for first generation
+        else:
+            prefill_text = self.definition['last_choice']
+
         return StoryInputPage(
             "artefact",
             Markup(
@@ -481,7 +507,7 @@ class StoryCreateTrial(CreateTrialMixin, ImitationChainTrial):
                 f"<p>Please reproduce the story for a peer. They will read multiple proposals and decide which is most likely correct.</p>"
             ),
             time_estimate=120,
-            bot_response=lambda: self.context["original"],
+            prefill_text=prefill_text,
         )
 
     def show_trial(self, experiment, participant):
@@ -567,6 +593,14 @@ class ColorCreateTrial(CreateTrialMixin, ImitationChainTrial):
 
     def input_page(self):
         """Input page for color creation"""
+        generation = self.definition["generation"]
+
+        # For generation 0, start from scratch (no prefill); for generation > 0, start with last_choice
+        if generation == 0:
+            prefill_colors = None  # No prefill for first generation
+        else:
+            prefill_colors = self.definition['last_choice']
+
         return ColorsInputPage(
             "artefact",
             Markup(
@@ -574,7 +608,7 @@ class ColorCreateTrial(CreateTrialMixin, ImitationChainTrial):
                 f"<p>Please reproduce the colors for a peer. They will read multiple proposals and decide which is most likely correct.</p>"
             ),
             time_estimate=120,
-            bot_response=lambda: self.context["original"]
+            prefill_colors=prefill_colors
         )
 
     def show_trial(self, experiment, participant):
@@ -660,8 +694,15 @@ class GridCreateTrial(CreateTrialMixin, ImitationChainTrial):
 
     def input_page(self):
         """Input page for grid creation"""
+        generation = self.definition["generation"]
         original_grid = self.context["original"]
         grid_size = len(original_grid)
+
+        # For generation 0, start from scratch (no prefill); for generation > 0, start with last_choice
+        if generation == 0:
+            prefill_grid = None  # No prefill for first generation
+        else:
+            prefill_grid = self.definition['last_choice']
 
         return GridInputPage(
             "artefact",
@@ -671,7 +712,7 @@ class GridCreateTrial(CreateTrialMixin, ImitationChainTrial):
                 f"<p><strong>Instructions:</strong> Click cells to toggle between black and white.</p>"
             ),
             time_estimate=120,
-            bot_response=lambda: self.context["original"],
+            prefill_grid=prefill_grid,
             grid_size=grid_size
         )
 
@@ -771,7 +812,7 @@ for node in story_nodes + color_nodes:
 # ============================================================================
 
 # Choose which type of experiment to run
-EXPERIMENT_TYPE = "grids"  # Change to "stories" or "mixed"
+EXPERIMENT_TYPE = "colors"  # Change to "stories" or "mixed"
 
 if EXPERIMENT_TYPE == "stories":
     nodes = story_nodes

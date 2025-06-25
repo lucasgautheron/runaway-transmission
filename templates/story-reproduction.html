@@ -1,0 +1,33 @@
+{% macro text(params) %}
+    <style>
+        #text-input-container {
+            padding-top: 20px;
+            padding-bottom: 20px;
+            display: flex;
+            justify-content: center;
+        }
+        #text-input {
+            {% if params.width is not none %} width: {{ params.width }}; {% endif %}
+            {% if params.height is not none %} height: {{ params.height }}; {% endif %}
+        }
+    </style>
+
+    <div id="text-input-container">
+        <{% if params.one_line %}input{% else %}textarea{% endif %} id="text-input" class="form-control response" type="text" autocomplete="off" value="" {% if params.block_copy_paste %}onselectstart="return false" oncut="return false" oncopy="return false" onpaste="return false" ondrag="return false" ondrop="return false"{% endif %}>{{ params.prefill_text }}<{% if params.one_line %}/input{% else %}/textarea{% endif %}>
+    </div>
+    <p class="vspace"></p>
+
+    <script>
+        retrieveResponse = function() {
+            return {
+                rawAnswer: $("#text-input").get(0).value
+            }
+        }
+
+        psynet.trial.onEvent("responseEnable", function() {
+            document.getElementById('text-input').focus();
+        });
+    </script>
+
+{% endmacro %}
+

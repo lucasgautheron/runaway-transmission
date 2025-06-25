@@ -18,195 +18,238 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@jaames/iro@5.5.2/dist/iro.min.js"></script>
 <script>
-class ColorReproductionInterface {
-    constructor(numColors) {
-        this.numColors = numColors;
-        this.selectedColors = [];
-        this.startTime = Date.now();
+    class ColorReproductionInterface {
+        constructor(numColors) {
+            this.numColors = numColors;
+            this.selectedColors = [];
+            this.startTime = Date.now();
 
-        this.initializeColorPicker();
-        this.bindEvents();
-        this.updateDisplay();
-    }
+            this.initializeColorPicker();
+            this.bindEvents();
+            this.updateDisplay();
 
-    initializeColorPicker() {
-        this.colorPicker = new iro.ColorPicker("#color-picker", {
-            width: 140,
-            color: "#ff0000",
-            layout: [
-                { component: iro.ui.Wheel },
-            ],
-            layoutDirection: 'horizontal' // This is the key property
-        });
+            // Check for prefilled data from bot_response
+            this.loadPrefillData();
+        }
 
-        this.colorPicker.on('color:change', (color) => {
-            this.updateCurrentColorDisplay();
-        });
-    }
+        initializeColorPicker() {
+            this.colorPicker = new iro.ColorPicker("#color-picker", {
+                width: 140,
+                color: "#ff0000",
+                layout: [
+                    {component: iro.ui.Wheel},
+                ],
+                layoutDirection: 'horizontal' // This is the key property
+            });
 
-    bindEvents() {
-        document.getElementById('add-color').addEventListener('click', () => {
-            if (this.selectedColors.length < this.numColors) {
-                const currentColor = this.colorPicker.color;
-                this.addSelectedColor({
-                    r: Math.round(currentColor.rgb.r),
-                    g: Math.round(currentColor.rgb.g),
-                    b: Math.round(currentColor.rgb.b),
-                    hex: currentColor.hexString
+            this.colorPicker.on('color:change', (color) => {
+                this.updateCurrentColorDisplay();
+            });
+        }
+
+        bindEvents() {
+            document.getElementById('add-color').addEventListener('click', () => {
+                if (this.selectedColors.length < this.numColors) {
+                    const currentColor = this.colorPicker.color;
+                    this.addSelectedColor({
+                        r: Math.round(currentColor.rgb.r),
+                        g: Math.round(currentColor.rgb.g),
+                        b: Math.round(currentColor.rgb.b),
+                        hex: currentColor.hexString
+                    });
+                }
+            });
+        }
+
+        loadPrefillData() {
+            // Check if there's prefill data from config
+            const prefillColors = {{ config.prefill_colors | tojson | safe }};
+
+            // Convert prefill colors to our format
+            if (Array.isArray(prefillColors)) {
+                this.selectedColors = prefillColors.map(color => {
+                    if (Array.isArray(color) && color.length === 3) {
+                        // Convert [r, g, b] format to our object format
+                        const [r, g, b] = color;
+                        return {
+                            r: Math.round(r),
+                            g: Math.round(g),
+                            b: Math.round(b),
+                            hex: this.rgbToHex(r, g, b)
+                        };
+                    }
+                    return color;
                 });
+                this.updateDisplay();
             }
-        });
-    }
+        }
 
-    addSelectedColor(color) {
-        this.selectedColors.push(color);
-        this.updateDisplay();
-    }
+        rgbToHex(r, g, b) {
+            return "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+        }
 
-    updateDisplay() {
-        const container = document.getElementById('reproduced-colors');
-        container.innerHTML = '';
+        addSelectedColor(color) {
+            this.selectedColors.push(color);
+            this.updateDisplay();
+        }
 
-        this.selectedColors.forEach((color, index) => {
-            const colorDiv = document.createElement('div');
-            colorDiv.className = 'color-sample selected-color';
-            colorDiv.style.backgroundColor = color.hex;
-            colorDiv.title = `R:${color.r} G:${color.g} B:${color.b} (click to remove)`;
-            colorDiv.onclick = () => this.removeColor(index);
-            container.appendChild(colorDiv);
-        });
+        updateDisplay() {
+            const container = document.getElementById('reproduced-colors');
+            container.innerHTML = '';
 
+            this.selectedColors.forEach((color, index) => {
+                const colorDiv = document.createElement('div');
+                colorDiv.className = 'color-sample selected-color';
+                colorDiv.style.backgroundColor = color.hex;
+                colorDiv.title = `R:${color.r} G:${color.g} B:${color.b} (click to remove)`;
+                colorDiv.onclick = () => this.removeColor(index);
+                container.appendChild(colorDiv);
+            });
 
-        const addButton = document.getElementById('add-color');
-        if (this.selectedColors.length >= this.numColors) {
-            addButton.disabled = true;
-            addButton.textContent = 'You reached the maximum amount of colors!';
-        } else {
-            addButton.disabled = false;
-            addButton.textContent = 'Add Color';
+            const addButton = document.getElementById('add-color');
+            if (this.selectedColors.length >= this.numColors) {
+                addButton.disabled = true;
+                addButton.textContent = 'You reached the maximum amount of colors!';
+            } else {
+                addButton.disabled = false;
+                addButton.textContent = 'Add Color';
+            }
+        }
+
+        updateCurrentColorDisplay() {
+            const currentColor = this.colorPicker.color;
+            const addButton = document.getElementById('add-color');
+            addButton.style.backgroundColor = currentColor.hexString;
+            addButton.style.color = currentColor.rgb.r + currentColor.rgb.g + currentColor.rgb.b > 400 ? '#000' : '#fff';
+        }
+
+        removeColor(index) {
+            this.selectedColors.splice(index, 1);
+            this.updateDisplay();
+        }
+
+        getResponseData() {
+            return this.selectedColors;
         }
     }
 
-    updateCurrentColorDisplay() {
-        const currentColor = this.colorPicker.color;
-        const addButton = document.getElementById('add-color');
-        addButton.style.backgroundColor = currentColor.hexString;
-        addButton.style.color = currentColor.rgb.r + currentColor.rgb.g + currentColor.rgb.b > 400 ? '#000' : '#fff';
-    }
+    // Initialize when DOM is ready
+    document.addEventListener('DOMContentLoaded', function () {
+        // Use config.num_colors instead of trying to serialize the whole config object
+        const numColors = {{ config.num_colors }};
+        window.colorInterface = new ColorReproductionInterface(numColors);
 
-    removeColor(index) {
-        this.selectedColors.splice(index, 1);
-        this.updateDisplay();
-    }
-
-    getResponseData() {
-        return this.selectedColors;
-    }
-}
-
-// Initialize when DOM is ready
-document.addEventListener('DOMContentLoaded', function() {
-    // Use config.num_colors instead of trying to serialize the whole config object
-    const numColors = {{ config.num_colors }};
-    window.colorInterface = new ColorReproductionInterface(numColors);
-
-    // PsyNet response staging
-    psynet.stageResponse = function() {
-        psynet.response.staged.rawAnswer = window.colorInterface.getResponseData();
-    };
-});
+        // PsyNet response staging
+        psynet.stageResponse = function () {
+            psynet.response.staged.rawAnswer = window.colorInterface.getResponseData();
+        };
+    });
 </script>
 
 <style>
-.color-reproduction-control {
-    max-width: 900px;
-    margin: 0 auto;
-    padding: 20px;
-    font-family: Arial, sans-serif;
-}
-.color-picker-container {
-    display: flex;
-    gap: 40px;
-    justify-content: center;
-    align-items: flex-start;
-    margin: 30px 0;
-    flex-wrap: wrap;
-}
-.picker-section {
-    text-align: center;
-}
-.selected-colors {
-    min-width: 300px;
-}
-.selected-colors h3 {
-    margin-bottom: 15px;
-    color: #333;
-    text-align: center;
-}
-.color-strip {
-    display: flex;
-    justify-content: center;
-    gap: 8px;
-    margin: 15px 0;
-    flex-wrap: wrap;
-}
-.color-sample {
-    width: 50px;
-    height: 50px;
-    border: 3px solid #ddd;
-    border-radius: 8px;
-    cursor: pointer;
-    transition: transform 0.2s, border-color 0.2s;
-    display: inline-block;
-}
-.color-sample:hover {
-    transform: scale(1.1);
-    border-color: #007bff;
-}
-.selected-color {
-    border-color: #28a745 !important;
-    box-shadow: 0 2px 4px rgba(40, 167, 69, 0.3);
-}
-.color-info {
-    display: flex;
-    justify-content: center;
-    margin-top: 15px;
-    font-weight: bold;
-    font-size: 14px;
-}
+    .color-reproduction-control {
+        max-width: 900px;
+        margin: 0 auto;
+        padding: 20px;
+        font-family: Arial, sans-serif;
+    }
 
-#add-color {
-    margin-top: 15px;
-    padding: 12px 24px;
-    font-size: 16px;
-    font-weight: bold;
-    border: none;
-    border-radius: 6px;
-    cursor: pointer;
-    transition: all 0.2s;
-    min-width: 120px;
-}
-#add-color:not(:disabled):hover {
-    transform: translateY(-2px);
-    box-shadow: 0 4px 8px rgba(0,0,0,0.2);
-}
-#add-color:disabled {
-    background-color: #28a745 !important;
-    color: white !important;
-    cursor: not-allowed;
-}
-@media (max-width: 768px) {
     .color-picker-container {
-        flex-direction: column;
-        align-items: center;
-    }
-    .color-strip {
+        display: flex;
+        gap: 40px;
         justify-content: center;
+        align-items: flex-start;
+        margin: 30px 0;
+        flex-wrap: wrap;
     }
+
+    .picker-section {
+        text-align: center;
+    }
+
+    .selected-colors {
+        min-width: 300px;
+    }
+
+    .selected-colors h3 {
+        margin-bottom: 15px;
+        color: #333;
+        text-align: center;
+    }
+
+    .color-strip {
+        display: flex;
+        justify-content: center;
+        gap: 8px;
+        margin: 15px 0;
+        flex-wrap: wrap;
+    }
+
     .color-sample {
-        width: 40px;
-        height: 40px;
+        width: 50px;
+        height: 50px;
+        border: 3px solid #ddd;
+        border-radius: 8px;
+        cursor: pointer;
+        transition: transform 0.2s, border-color 0.2s;
+        display: inline-block;
     }
-}
+
+    .color-sample:hover {
+        transform: scale(1.1);
+        border-color: #007bff;
+    }
+
+    .selected-color {
+        border-color: #28a745 !important;
+        box-shadow: 0 2px 4px rgba(40, 167, 69, 0.3);
+    }
+
+    .color-info {
+        display: flex;
+        justify-content: center;
+        margin-top: 15px;
+        font-weight: bold;
+        font-size: 14px;
+    }
+
+    #add-color {
+        margin-top: 15px;
+        padding: 12px 24px;
+        font-size: 16px;
+        font-weight: bold;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        transition: all 0.2s;
+        min-width: 120px;
+    }
+
+    #add-color:not(:disabled):hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+    }
+
+    #add-color:disabled {
+        background-color: #28a745 !important;
+        color: white !important;
+        cursor: not-allowed;
+    }
+
+    @media (max-width: 768px) {
+        .color-picker-container {
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .color-strip {
+            justify-content: center;
+        }
+
+        .color-sample {
+            width: 40px;
+            height: 40px;
+        }
+    }
 </style>
 {% endmacro %}
