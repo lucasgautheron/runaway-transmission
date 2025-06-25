@@ -4,9 +4,12 @@ description = This experiment requires you to XXX. Please use a Chrome browser i
 contact_email_on_error = XXX@gmail.com
 organization_name = XXX
 
-recruiter = generic
+recruiter = hotair
 currency = $
 wage_per_hour = 12.0
+
+initial_recruitment_size = 100
+allow_mobile_devices = True
 
 [Prolific]
 # recruiter = prolific

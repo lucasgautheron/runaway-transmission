@@ -460,7 +460,6 @@ trial_maker = GridTrialMaker(
 
 class Exp(psynet.experiment.Experiment):
     label = "Grid pattern transmission experiment"
-    initial_recruitment_size = 1
 
     timeline = Timeline(
         MainConsent(),
