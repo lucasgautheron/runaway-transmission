@@ -29,7 +29,7 @@ from typing import List
 logger = get_logger()
 
 N_CREATORS_PER_GENERATION = 2
-N_GRIDS = 1
+N_GRIDS = 2
 N_GENERATIONS = 10
 
 
@@ -73,6 +73,7 @@ class ArtefactNode(ChainNode, CreateAndRateNodeMixin):
     def summarize_trials(self, trials, experiment, participant):
         logger.info(f"Summarizing trials for node {self.id}")
         trial_maker = self.trial_maker
+
         all_rate_trials = trial_maker.rater_class.query.filter_by(
             node_id=self.id, failed=False, finalized=True
         ).all()
@@ -84,18 +85,19 @@ class ArtefactNode(ChainNode, CreateAndRateNodeMixin):
 
         count_dict = {i: 0 for i in range(len(all_targets))}
 
-        print(trials)
-        for trial in trials:
+        for trial in all_rate_trials:
             if not isinstance(trial, SelectTrialMixin):
                 print("exclude ", trial)
                 continue
 
             # Find which target matches this trial's answer
             for i, target in enumerate(all_targets):
-                print(trial.answer, target.answer)
-                if trial.answer == target.answer:
+                print(trial.answer, str(target), target.answer)
+                if trial.answer == str(target):
                     count_dict[i] += 1
                     break
+
+        print(count_dict)
 
         # Get the index of the target with highest count
         winning_index = max(count_dict, key=count_dict.get)
@@ -111,7 +113,7 @@ class ArtefactNode(ChainNode, CreateAndRateNodeMixin):
 class GridNode(ArtefactNode):
     """Node class specifically for grid artefacts"""
 
-    def __init__(self, grid_data: List[List[int]] = None, size: int = 8, random: bool = False, **kwargs):
+    def __init__(self, grid_data: List[List[int]] = None, size: int = 10, random: bool = False, **kwargs):
         if grid_data is None and random is True:
             grid_data = self.random(size)
 
@@ -133,7 +135,7 @@ class GridNode(ArtefactNode):
 
     def random(self, size: int):
         """Generate random grid with 0s and 1s (white and black)"""
-        return np.random.choice([0, 1], size=(size, size), p=[0.75, 0.25]).tolist()
+        return np.random.choice([0, 1], size=(size, size), p=[0.8, 0.2]).tolist()
 
     def _validate_grid_format(self, grid_data):
         """Validate grid format with assertions"""
@@ -178,14 +180,17 @@ class GridNode(ArtefactNode):
         return cls(grid_data=grid_data, **kwargs)
 
     @classmethod
-    def generate_random(cls, size: int = 8, **kwargs):
+    def generate_random(cls, size: int = 10, **kwargs):
         """Create GridNode with random pattern"""
         return cls(size=size, random=True, **kwargs)
 
     @classmethod
-    def accuracy(cls, a, b):
+    def accuracy(cls, truth, attempt):
         """Create GridNode with random pattern"""
-        return (np.array(a) == np.array(b)).mean()
+        truth = np.array(truth) * 1
+        attempt = np.array(attempt) * 1
+
+        return ((truth == 1) & (attempt == 1)).mean()
 
     def __repr__(self):
         return f"GridNode({self.size}x{self.size})"
@@ -209,7 +214,7 @@ class GridReproductionControl(Control):
 
 
 class GridInputPage(ModularPage):
-    def __init__(self, label: str, prompt: str, time_estimate: float, prefill_grid=None, grid_size: int = 8):
+    def __init__(self, label: str, prompt: str, time_estimate: float, prefill_grid=None, grid_size: int = 10):
         super().__init__(
             label,
             Prompt(prompt),
@@ -283,13 +288,20 @@ class GridCreateTrial(CreateTrialMixin, ImitationChainTrial):
         else:
             prefill_grid = self.definition['last_choice']
 
+        text = Markup(
+            f"<h3>Now, reproduce the grid!</h3>"
+            f"<p>Please reproduce the grid you just saw below. Then, another participant <b>who has not seen the original</b> will see multiple proposals, including yours, and decide which is most likely correct. Can you beat the others?</p>"
+            f"<p><strong>Instructions:</strong> Click cells to toggle between black and white.</p>"
+        ) if generation == 0 else Markup(
+            f"<h3>Now, reproduce the grid!</h3>"
+            f"<p>Please reproduce the grid you just saw below. Then, another participant <b>who has not seen the original</b> will see multiple proposals, including yours, and decide which is most likely correct. Can you beat the others?</p>"
+            f"<p>You are starting from the grid that was chosen last.</p>"
+            f"<p><strong>Instructions:</strong> Click cells to toggle between black and white.</p>"
+        )
+
         return GridInputPage(
             "artefact",
-            Markup(
-                f"<h3>Your Task</h3>"
-                f"<p>Please reproduce the grid pattern for a peer. They will see multiple proposals and decide which is most likely correct.</p>"
-                f"<p><strong>Instructions:</strong> Click cells to toggle between black and white.</p>"
-            ),
+            text,
             time_estimate=120,
             prefill_grid=prefill_grid,
             grid_size=grid_size
@@ -354,7 +366,7 @@ class GridSelectTrial(SelectTrialMixin, ImitationChainTrial):
 class GridTrialMaker(CreateAndRateTrialMakerMixin, ImitationChainTrialMaker):
     """Trial maker specifically for grid experiments"""
 
-    def __init__(self, n_grids: int, grid_size: int = 8, *args, **kwargs):
+    def __init__(self, n_grids: int, grid_size: int = 10, *args, **kwargs):
         super().__init__(start_nodes=[GridNode(size=grid_size, random=True) for _ in range(n_grids)], *args, **kwargs)
 
 
@@ -374,7 +386,7 @@ trial_maker = GridTrialMaker(
     expected_trials_per_participant=N_GRIDS,
     max_trials_per_participant=N_GRIDS,
     n_grids=N_GRIDS,
-    grid_size=8,
+    grid_size=10,
     chains_per_experiment=N_GRIDS,
     balance_across_chains=False,
     check_performance_at_end=True,
@@ -384,6 +396,7 @@ trial_maker = GridTrialMaker(
     target_n_participants=None,
     wait_for_networks=False,
     max_nodes_per_chain=N_GENERATIONS,
+    allow_revisiting_networks_in_across_chains=False
 )
 
 
