@@ -203,7 +203,7 @@ class GridReproductionControl(Control):
     def __init__(self, grid_size=8, prefill_grid=None, **kwargs):
         self.grid_size = grid_size
         self.prefill_grid = prefill_grid
-        super().__init__(**kwargs, bot_response = self.bot_response())
+        super().__init__(**kwargs, bot_response=self.bot_response())
 
     def bot_response(self):
         if self.prefill_grid:
@@ -211,8 +211,8 @@ class GridReproductionControl(Control):
         else:
             grid = np.random.choice([0, 1], size=(self.grid_size, self.grid_size), p=[0.8, 0.2])
 
-        x,y  = np.random.choice(self.grid_size, 2)
-        grid[x,y] = 1 - grid[x,y]
+        x, y = np.random.choice(self.grid_size, 2)
+        grid[x, y] = 1 - grid[x, y]
 
         return grid.tolist()
 
@@ -375,7 +375,7 @@ class GridSelectTrial(SelectTrialMixin, ImitationChainTrial):
             control=PushButtonControl(
                 choices=artefacts,
                 labels=[f"Version {i + 1}" for i in range(len(artefacts))],
-                arrange_vertically=True,
+                arrange_vertically=False,
                 bot_response=lambda: random.choice(self.targets),
             ),
             time_estimate=30,
@@ -426,6 +426,7 @@ class GridTrialMaker(CreateAndRateTrialMakerMixin, ImitationChainTrialMaker):
 
         elif isinstance(trial, CreateTrialMixin):
             trial.var.accuracy = int(GridNode.accuracy(trial.context["original"], trial.answer))
+
 
 # Experiment setup
 trial_maker = GridTrialMaker(
