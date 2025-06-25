@@ -33,6 +33,7 @@ logger = get_logger()
 N_CREATORS_PER_GENERATION = 2
 N_STORIES = 1
 N_COLORLISTS = 1
+N_GRIDS = 1
 N_GENERATIONS = 10
 
 stories = pd.read_csv("stories.csv").sample(n=N_STORIES)["Story"].tolist()
@@ -47,13 +48,28 @@ def colors_to_html(colors: List[List[int]], width="50px"):
     return f"<div style='display:flex;'>{html}</div>"
 
 
+# Utility function for grid HTML generation (no database interaction)
+def grid_to_html(grid_data: List[List[int]], cell_size="20px"):
+    """Generate HTML representation of grid without creating a node"""
+    html = f'<div style="display: inline-block; border: 1px solid #333;">'
+    for row in grid_data:
+        html += '<div style="display: flex; line-height: 0;">'
+        for cell in row:
+            color = "#000" if cell == 1 else "#fff"
+            html += f'<div style="background-color: {color}; width: {cell_size}; height: {cell_size}; border: 1px solid #ccc;"></div>'
+        html += '</div>'
+    html += '</div>'
+    return html
+
+
 class ArtefactNode(ChainNode, CreateAndRateNodeMixin):
     def __init__(self, artefact=None, **kwargs):
-        self.artefact = artefact
         # Set context before calling super().__init__
         if artefact is not None:
             kwargs['context'] = {"original": artefact, "artefact_type": self.get_artefact_type()}
+
         super().__init__(**kwargs)
+        self.artefact = artefact
 
     def get_artefact_type(self):
         """Override in subclasses to specify artefact type"""
@@ -83,8 +99,10 @@ class ArtefactNode(ChainNode, CreateAndRateNodeMixin):
 
         count_dict = {i: 0 for i in range(len(all_targets))}
 
+        print(trials)
         for trial in trials:
             if not isinstance(trial, SelectTrialMixin):
+                print("exclude ", trial)
                 continue
 
             # Find which target matches this trial's answer
@@ -110,7 +128,6 @@ class StoryNode(ArtefactNode):
 
     def __init__(self, story_text: str = None, **kwargs):
         super().__init__(artefact=story_text, **kwargs)
-        self.story_text = story_text
 
     def get_artefact_type(self):
         return "text"
@@ -121,20 +138,12 @@ class StoryNode(ArtefactNode):
 
     def get_display_text(self):
         """Get formatted text for display"""
-        return self.story_text
+        return self.artefact
 
     def __repr__(self):
-        preview = self.story_text[:50] + "..." if len(self.story_text) > 50 else self.story_text
+        preview = self.artefact[:50] + "..." if len(self.artefact) > 50 else self.artefact
         return f"StoryNode('{preview}')"
 
-
-class GridNode(ArtefactNode):
-    def __init__(self, grid: List[List[int]], **kwargs):
-        super().__init__(artefact=grid, **kwargs)
-        self.grid = grid
-
-    def random(self, n):
-        return np.random.randint(0, 1, size=(n, n)).tolist()
 
 class ColorListNode(ArtefactNode):
     """Node class specifically for color list artefacts"""
@@ -145,10 +154,12 @@ class ColorListNode(ArtefactNode):
 
         # Validate colors during initialization
         self._validate_colors_format(colors)
-
         super().__init__(artefact=colors, **kwargs)
-        self.colors = colors
-        self.n_colors = len(colors)
+
+    @property
+    def n_colors(self):
+        """Get number of colors"""
+        return len(self.artefact) if self.artefact else 0
 
     def get_artefact_type(self):
         return "colors"
@@ -180,11 +191,8 @@ class ColorListNode(ArtefactNode):
         return True
 
     def html(self, width="50px"):
-        """Generate HTML representation of colors (integrated from ColorArtefact)"""
-        html = ""
-        for color in self.colors:
-            html += f"<div style='background-color: rgb({color[0]}, {color[1]}, {color[2]}); width: {width}; padding: 0px; margin-right: 10px'>&nbsp;</div>"
-        return f"<div style='display:flex;'>{html}</div>"
+        """Generate HTML representation of colors"""
+        return colors_to_html(self.artefact, width)
 
     def get_html_display(self, width="50px"):
         """Get HTML representation of colors"""
@@ -202,6 +210,84 @@ class ColorListNode(ArtefactNode):
 
     def __repr__(self):
         return f"ColorListNode({self.n_colors} colors)"
+
+
+class GridNode(ArtefactNode):
+    """Node class specifically for grid artefacts"""
+
+    def __init__(self, grid_data: List[List[int]] = None, size: int = 8, random: bool = False, **kwargs):
+        if grid_data is None and random is True:
+            grid_data = self.random(size)
+
+        super().__init__(artefact=grid_data, **kwargs)
+
+        if self.artefact is None:
+            self.artefact = self.definition["last_choice"]
+
+        # Validate grid during initialization
+        self._validate_grid_format(self.artefact)
+
+    @property
+    def size(self):
+        """Get grid size"""
+        return len(self.artefact) if self.artefact else 0
+
+    def get_artefact_type(self):
+        return "grid"
+
+    def random(self, size: int):
+        """Generate random grid with 0s and 1s (white and black)"""
+        return np.random.choice([0, 1], size=(size, size), p=[0.8, 0.2]).tolist()
+
+    def _validate_grid_format(self, grid_data):
+        """Validate grid format with assertions"""
+        assert isinstance(grid_data, list), "Grid must be a list"
+        assert len(grid_data) > 0, "Grid cannot be empty"
+        assert all(isinstance(row, list) for row in grid_data), "All rows must be lists"
+        assert len(set(len(row) for row in grid_data)) == 1, "All rows must have same length"
+        assert len(grid_data) == len(grid_data[0]), "Grid must be square (NxN)"
+        assert all(
+            all(cell in [0, 1] for cell in row) for row in grid_data
+        ), "All cells must be 0 (white) or 1 (black)"
+
+    def validate_artefact(self):
+        """Validate that grid is in correct format (non-asserting version)"""
+        if not isinstance(self.artefact, list):
+            return False
+
+        if len(self.artefact) == 0:
+            return False
+
+        for row in self.artefact:
+            if not isinstance(row, list):
+                return False
+            if len(row) != len(self.artefact):
+                return False
+            if not all(cell in [0, 1] for cell in row):
+                return False
+
+        return True
+
+    def html(self, cell_size="20px"):
+        """Generate HTML representation of grid"""
+        return grid_to_html(self.artefact, cell_size)
+
+    def get_html_display(self, cell_size="20px"):
+        """Get HTML representation of grid"""
+        return self.html(cell_size)
+
+    @classmethod
+    def from_grid_data(cls, grid_data: List[List[int]], **kwargs):
+        """Create GridNode from existing grid data"""
+        return cls(grid_data=grid_data, **kwargs)
+
+    @classmethod
+    def generate_random(cls, size: int = 8, **kwargs):
+        """Create GridNode with random pattern"""
+        return cls(size=size, random=True, **kwargs)
+
+    def __repr__(self):
+        return f"GridNode({self.size}x{self.size})"
 
 
 class StoryInputPage(ModularPage):
@@ -284,6 +370,67 @@ class ColorsInputPage(ModularPage):
         colors = response.answer
         if len(colors) == 0:
             return FailedValidation("Please select at least one color.")
+        return None
+
+
+class GridReproductionControl(Control):
+    macro = "grid_reproduction_control"
+    external_template = "grid-reproduction.html"
+
+    def __init__(self, grid_size=8, bot_response=None):
+        super().__init__(bot_response=bot_response)
+        self.grid_size = grid_size
+
+    @property
+    def metadata(self):
+        return {
+            "grid_size": self.grid_size
+        }
+
+
+class GridInputPage(ModularPage):
+    def __init__(self, label: str, prompt: str, time_estimate: float, bot_response, grid_size: int = 8):
+        super().__init__(
+            label,
+            Prompt(prompt),
+            control=GridReproductionControl(
+                grid_size=grid_size,
+                bot_response=bot_response
+            ),
+            time_estimate=time_estimate,
+        )
+
+    def format_answer(self, raw_answer, **kwargs):
+        if not isinstance(raw_answer, list):
+            return "INVALID_RESPONSE"
+
+        grid_data = raw_answer
+        return self._validate_grid(grid_data)
+
+    def _validate_grid(self, grid_data):
+        # Ensure grid format consistency
+        if not isinstance(grid_data, list):
+            return [[0] * 8 for _ in range(8)]  # Default 8x8 white grid
+
+        # Validate each row and cell
+        validated_grid = []
+        for row in grid_data:
+            if isinstance(row, list):
+                validated_row = [1 if cell == 1 else 0 for cell in row]
+                validated_grid.append(validated_row)
+            else:
+                validated_grid.append([0] * len(grid_data))
+
+        return validated_grid
+
+    def validate(self, response, **kwargs):
+        if response.answer == "INVALID_RESPONSE":
+            return FailedValidation("Please enter a response.")
+        if not isinstance(response.answer, list):
+            return FailedValidation("Invalid response format.")
+        grid_data = response.answer
+        if len(grid_data) == 0:
+            return FailedValidation("Please create a grid pattern.")
         return None
 
 
@@ -477,6 +624,100 @@ class ColorSelectTrial(SelectTrialMixin, ImitationChainTrial):
         )
 
 
+class GridCreateTrial(CreateTrialMixin, ImitationChainTrial):
+    """Trial class specifically for grid creation tasks"""
+    time_estimate = 5
+
+    def first_trial(self):
+        """First trial - show original grid"""
+        return InfoPage(
+            Markup(
+                f"<h3>Grid Pattern Reproduction</h3>"
+                f"<p>Please study and memorize this grid pattern:</p>"
+                f"<div style='padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 4px solid #4CAF50; text-align: center;'>"
+                f"<strong>Original Pattern:</strong><br>{grid_to_html(self.context['original'])}"
+                f"</div>"
+            ),
+            time_estimate=self.time_estimate,
+        )
+
+    def other_trial(self):
+        """Subsequent trials - show original + last winning grid"""
+        generation = self.definition["generation"]
+        return InfoPage(
+            Markup(
+                f"<h3>Grid Pattern Reproduction - Generation {generation}</h3>"
+                f"<p>Please study and memorize the following grid patterns:</p>"
+                f"<div style='padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 4px solid #4CAF50; text-align: center;'>"
+                f"<strong>Original Pattern:</strong><br>{grid_to_html(self.context['original'])}"
+                f"</div>"
+                f"<div style='padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 4px solid #ffc107; text-align: center;'>"
+                f"<strong>Last winning pattern (chosen by a participant):</strong><br>{grid_to_html(self.definition['last_choice'])}"
+                f"</div>"
+            ),
+            time_estimate=self.time_estimate,
+        )
+
+    def input_page(self):
+        """Input page for grid creation"""
+        original_grid = self.context["original"]
+        grid_size = len(original_grid)
+
+        return GridInputPage(
+            "artefact",
+            Markup(
+                f"<h3>Your Task</h3>"
+                f"<p>Please reproduce the grid pattern for a peer. They will see multiple proposals and decide which is most likely correct.</p>"
+                f"<p><strong>Instructions:</strong> Click cells to toggle between black and white.</p>"
+            ),
+            time_estimate=120,
+            bot_response=lambda: self.context["original"],
+            grid_size=grid_size
+        )
+
+    def show_trial(self, experiment, participant):
+        """Show the complete grid creation trial"""
+        generation = self.definition["generation"]
+
+        if generation == 0:
+            info_page = self.first_trial()
+        else:
+            info_page = self.other_trial()
+
+        input_page = self.input_page()
+        return [info_page, input_page]
+
+
+class GridSelectTrial(SelectTrialMixin, ImitationChainTrial):
+    """Trial class specifically for grid selection tasks"""
+    time_estimate = 5
+
+    def show_trial(self, experiment, participant):
+        """Show grid selection trial"""
+        artefacts = self.get_all_targets()
+
+        return ModularPage(
+            "choice",
+            Prompt(Markup(
+                "<h3>Choose the Best Version</h3>"
+                "<p>Please choose the grid pattern that seems most faithful to the original:</p>"
+                "<div style='display: flex; justify-content: center; gap: 20px; flex-wrap: wrap; margin: 20px 0;'>"
+                + "\n".join([
+                    f"<div style='text-align: center;'><strong>Version {i + 1}:</strong><br>{grid_to_html(self.get_target_answer(artefact))}</div>"
+                    for i, artefact in enumerate(artefacts)
+                ])
+                + "</div>"
+            )),
+            control=PushButtonControl(
+                choices=artefacts,
+                labels=[f"Version {i + 1}" for i in range(len(artefacts))],
+                arrange_vertically=True,
+                bot_response=lambda: random.choice(self.targets),
+            ),
+            time_estimate=30,
+        )
+
+
 # ============================================================================
 # TRIAL MAKERS
 # ============================================================================
@@ -491,9 +732,19 @@ class ColorTrialMaker(CreateAndRateTrialMakerMixin, ImitationChainTrialMaker):
     pass
 
 
+class GridTrialMaker(CreateAndRateTrialMakerMixin, ImitationChainTrialMaker):
+    """Trial maker specifically for grid experiments"""
+    pass
+
+
 # ============================================================================
 # FACTORY FUNCTIONS AND SETUP
 # ============================================================================
+
+def create_grid_nodes(n_grids: int, grid_size: int = 8) -> List[GridNode]:
+    """Create grid nodes"""
+    return [GridNode(size=grid_size, random=True) for _ in range(n_grids)]
+
 
 def create_story_nodes(stories_list: List[str]) -> List[StoryNode]:
     """Create story nodes from a list of story texts"""
@@ -508,6 +759,7 @@ def create_color_nodes(n_colorlists: int, colors_per_list: int = 10) -> List[Col
 # Create nodes using the new classes
 story_nodes = create_story_nodes(stories)
 color_nodes = create_color_nodes(N_COLORLISTS, 10)
+grid_nodes = create_grid_nodes(N_GRIDS, 8)
 
 # Validation example
 for node in story_nodes + color_nodes:
@@ -519,7 +771,7 @@ for node in story_nodes + color_nodes:
 # ============================================================================
 
 # Choose which type of experiment to run
-EXPERIMENT_TYPE = "colors"  # Change to "stories" or "mixed"
+EXPERIMENT_TYPE = "grids"  # Change to "stories" or "mixed"
 
 if EXPERIMENT_TYPE == "stories":
     nodes = story_nodes
@@ -561,6 +813,33 @@ elif EXPERIMENT_TYPE == "colors":
         target_selection_method="all",
         verbose=True,
         id_="color_trial_maker",
+        chain_type="across",
+        expected_trials_per_participant=len(nodes),
+        max_trials_per_participant=len(nodes),
+        start_nodes=nodes,
+        chains_per_experiment=len(nodes),
+        balance_across_chains=False,
+        check_performance_at_end=True,
+        check_performance_every_trial=False,
+        propagate_failure=False,
+        recruit_mode="n_trials",
+        target_n_participants=None,
+        wait_for_networks=False,
+        max_nodes_per_chain=N_GENERATIONS,
+    )
+elif EXPERIMENT_TYPE == "grids":
+    nodes = grid_nodes
+    trial_maker = GridTrialMaker(
+        n_creators=N_CREATORS_PER_GENERATION,
+        n_raters=1,
+        node_class=GridNode,
+        creator_class=GridCreateTrial,
+        rater_class=GridSelectTrial,
+        include_previous_iteration=False,
+        rate_mode="select",
+        target_selection_method="all",
+        verbose=True,
+        id_="grid_trial_maker",
         chain_type="across",
         expected_trials_per_participant=len(nodes),
         max_trials_per_participant=len(nodes),

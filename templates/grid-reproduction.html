@@ -1,0 +1,415 @@
+{ % macro
+grid_reproduction_control(config) %}
+< div
+
+
+class ="grid-reproduction-control" >
+
+< div
+
+
+class ="grid-container-wrapper" >
+
+< div
+
+
+class ="grid-section" >
+
+< h3 > Click
+cells
+to
+toggle
+between
+black and white: < / h3 >
+< div
+id = "grid-interface"
+
+
+class ="grid-interface" > < / div >
+
+< div
+
+
+class ="grid-controls" >
+
+< button
+id = "clear-grid"
+
+
+class ="btn btn-secondary" > Clear All < / button >
+
+< button
+id = "fill-grid"
+
+
+class ="btn btn-secondary" > Fill All < / button >
+
+< / div >
+< / div >
+< / div >
+< / div >
+
+< script >
+
+
+class GridReproductionInterface {
+constructor(gridSize) {
+this.gridSize = gridSize;
+this.gridData =[];
+this.startTime = Date.now();
+
+this.initializeGrid();
+this.bindEvents();
+this.updateDisplay();
+}
+
+initializeGrid() {
+// Initialize grid data with all white cells (0)
+this.gridData = Array(this.gridSize).fill().map(() = > Array(this.gridSize).fill(0));
+
+const container = document.getElementById('grid-interface');
+container.innerHTML = '';
+
+// Create grid container
+const gridElement = document.createElement('div');
+gridElement.className = 'grid';
+gridElement.style.display = 'grid';
+gridElement.style.gridTemplateColumns = `repeat(${this.gridSize}, 1fr)`;
+gridElement.style.gridTemplateRows = `repeat(${this.gridSize}, 1fr)`;
+gridElement.style.gap = '1px';
+gridElement.style.border = '2px solid #333';
+gridElement.style.backgroundColor = '#333';
+gridElement.style.width = 'fit-content';
+gridElement.style.margin = '0 auto';
+
+// Create cells
+this.cells =[];
+for (let row = 0; row < this.gridSize; row++) {
+for (let col = 0; col < this.gridSize; col++) {
+const cell = document.createElement('div');
+cell.className = 'grid-cell white';
+cell.dataset.row = row;
+cell.dataset.col = col;
+
+cell.addEventListener('click', () = > this.toggleCell(row, col));
+
+gridElement.appendChild(cell);
+this.cells.push(cell);
+}
+}
+
+container.appendChild(gridElement);
+}
+
+bindEvents() {
+document.getElementById('clear-grid').addEventListener('click', () = > {
+this.clearGrid();
+});
+
+document.getElementById('fill-grid').addEventListener('click', () = > {
+this.fillGrid();
+});
+}
+
+toggleCell(row, col) {
+// Toggle cell state
+this.gridData[row][col] = this.gridData[row][col] == = 0 ? 1: 0;
+
+//
+
+
+Update
+visual
+representation
+const
+cellIndex = row * this.gridSize + col;
+const
+cell = this.cells[cellIndex];
+
+if (this.gridData[row][col] === 1)
+{
+    cell.classList.remove('white');
+cell.classList.add('black');
+} else {
+    cell.classList.remove('black');
+cell.classList.add('white');
+}
+}
+
+clearGrid()
+{
+for (let row = 0; row < this.gridSize; row++) {
+for (let col = 0; col < this.gridSize; col++) {
+this.gridData[row][col] = 0;
+const cellIndex = row * this.gridSize + col;
+const cell = this.cells[cellIndex];
+cell.classList.remove('black');
+cell.classList.add('white');
+}
+}
+}
+
+fillGrid() {
+for (let row = 0; row < this.gridSize; row++) {
+for (let col = 0; col < this.gridSize; col++) {
+this.gridData[row][col] = 1;
+const cellIndex = row * this.gridSize + col;
+const cell = this.cells[cellIndex];
+cell.classList.remove('white');
+cell.classList.add('black');
+}
+}
+}
+
+updateDisplay() {
+// Update any additional display elements if needed
+// Currently handled by individual cell updates
+}
+
+getResponseData() {
+return this.gridData;
+}
+
+setGridData(gridData)
+{
+if (gridData & & Array.isArray(gridData) & & gridData.length === this.gridSize) {
+this.gridData = gridData.map(row = >[...row]); // Deep copy
+
+// Update visual representation
+for (let row = 0; row < this.gridSize; row++) {
+for (let col = 0; col < this.gridSize; col++) {
+const cellIndex = row * this.gridSize + col;
+const cell = this.cells[cellIndex];
+
+if (this.gridData[row][col] == = 1) {
+cell.classList.remove('white');
+cell.classList.add('black');
+} else {
+cell.classList.remove('black');
+cell.classList.add('white');
+}
+}
+}
+}
+}
+}
+
+// Initialize
+when
+DOM is ready
+document.addEventListener('DOMContentLoaded', function()
+{
+const
+gridSize = {{config.grid_size}};
+window.gridInterface = new
+GridReproductionInterface(gridSize);
+
+// PsyNet
+response
+staging
+psynet.stageResponse = function()
+{
+    psynet.response.staged.rawAnswer = window.gridInterface.getResponseData();
+};
+});
+< / script >
+
+    < style >
+.grid - reproduction - control
+{
+    max - width: 800px;
+margin: 0
+auto;
+padding: 20
+px;
+font - family: Arial, sans - serif;
+}
+
+.grid - container - wrapper
+{
+    display: flex;
+justify - content: center;
+align - items: flex - start;
+margin: 30
+px
+0;
+}
+
+.grid - section
+{
+    text - align: center;
+}
+
+.grid - section
+h3
+{
+    margin - bottom: 20px;
+color:  # 333;
+}
+
+.grid - interface
+{
+    margin: 20px 0;
+}
+
+.grid
+{
+    display: inline - block;
+}
+
+.grid - cell
+{
+    width: 30px;
+height: 30
+px;
+cursor: pointer;
+transition: opacity
+0.1
+s
+ease, transform
+0.1
+s
+ease;
+border: none;
+}
+
+.grid - cell: hover
+{
+    opacity: 0.8;
+transform: scale(0.95);
+}
+
+.grid - cell.black
+{
+    background - color:  # 000;
+}
+
+.grid - cell.white
+{
+    background - color:  # fff;
+}
+
+.grid - controls
+{
+    margin - top: 20px;
+display: flex;
+justify - content: center;
+gap: 15
+px;
+}
+
+.grid - controls
+button
+{
+    padding: 10px 20px;
+font - size: 14
+px;
+font - weight: bold;
+border: none;
+border - radius: 5
+px;
+cursor: pointer;
+transition: all
+0.2
+s;
+min - width: 100
+px;
+}
+
+.btn - secondary
+{
+    background - color:  # 6c757d;
+        color: white;
+}
+
+.btn - secondary: hover
+{
+    background - color:  # 5a6268;
+        transform: translateY(-2
+px);
+box - shadow: 0
+4
+px
+8
+px
+rgba(0, 0, 0, 0.2);
+}
+
+/ *Responsive
+design * /
+@ media(max - width: 768
+px) {
+    .grid - cell
+{
+width: 25
+px;
+height: 25
+px;
+}
+
+.grid - controls
+{
+flex - direction: column;
+align - items: center;
+gap: 10
+px;
+}
+
+.grid - controls
+button
+{
+min - width: 150
+px;
+}
+}
+
+@media(max - width
+
+: 480
+px) {
+    .grid - cell
+{
+width: 20
+px;
+height: 20
+px;
+}
+}
+
+/ *Additional
+styling
+for better UX * /
+.grid-reproduction-control {
+background-color:  # f8f9fa;
+    border - radius: 10
+px;
+box - shadow: 0
+2
+px
+10
+px
+rgba(0, 0, 0, 0.1);
+}
+
+.grid - section
+h3
+{
+    font - weight: 600;
+color:  # 495057;
+}
+
+/ *Loading
+state * /
+.grid - loading
+{
+    display: flex;
+justify - content: center;
+align - items: center;
+height: 200
+px;
+font - size: 18
+px;
+color:  # 6c757d;
+}
+< / style >
+    { % endmacro %}
