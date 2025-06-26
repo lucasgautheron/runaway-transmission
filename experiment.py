@@ -29,8 +29,8 @@ from typing import List
 logger = get_logger()
 
 N_CREATORS_PER_GENERATION = 3
-# N_GRIDS = 12
-N_GRIDS = 3
+N_GRIDS = 12
+# N_GRIDS = 3
 N_GENERATIONS = 9
 
 
@@ -482,8 +482,8 @@ class GridImitationChainTrialMaker(ImitationChainTrialMaker):
             node_class=GridImitationNode,
             trial_class=GridCreateTrial,  # Use the new imitation trial class
             chains_per_experiment=n_grids,
-            expected_trials_per_participant=n_grids / N_CREATORS_PER_GENERATION,
-            max_trials_per_participant=n_grids / N_CREATORS_PER_GENERATION,
+            expected_trials_per_participant=n_grids / (N_CREATORS_PER_GENERATION + 1),
+            max_trials_per_participant=n_grids / (N_CREATORS_PER_GENERATION + 1),
             max_nodes_per_chain=N_GENERATIONS,
             balance_across_chains=False,
             check_performance_at_end=True,
