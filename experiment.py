@@ -3,9 +3,9 @@
 from markupsafe import Markup
 import psynet.experiment
 from psynet.consent import NoConsent, MainConsent
-from psynet.modular_page import Prompt, ModularPage, PushButtonControl, Control
+from psynet.modular_page import Prompt, ModularPage, PushButtonControl, Control, TextControl
 from psynet.page import InfoPage, SuccessfulEndPage
-from psynet.timeline import FailedValidation, Timeline
+from psynet.timeline import FailedValidation, Timeline, Response
 from psynet.trial.create_and_rate import (
     CreateAndRateNode,
     CreateAndRateNodeMixin,
@@ -29,8 +29,9 @@ from typing import List
 logger = get_logger()
 
 N_CREATORS_PER_GENERATION = 3
-N_GRIDS = 5
-N_GENERATIONS = 10
+# N_GRIDS = 12
+N_GRIDS = 3
+N_GENERATIONS = 9
 
 
 # Utility function for grid HTML generation (no database interaction)
@@ -270,9 +271,19 @@ class GridInputPage(ModularPage):
         return None
 
 
+class GridImitationNode(GridNode):
+    def summarize_trials(self, trials, experiment, participant):
+        print(self.seed)
+        definition = self.seed.copy()
+        definition["generation"] += 1
+        definition["last_choice"] = trials[0].answer
+
+        return definition
+
+
 class GridCreateTrial(CreateTrialMixin, ImitationChainTrial):
     """Trial class specifically for grid creation tasks"""
-    time_estimate = 5
+    time_estimate = 60
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -282,9 +293,10 @@ class GridCreateTrial(CreateTrialMixin, ImitationChainTrial):
         """First trial - show original grid"""
         return InfoPage(
             Markup(
-                f"<h3>Grid Pattern Reproduction</h3>"
-                f"<p>Please study and memorize this grid pattern:</p>"
-                f"<div style='padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 4px solid #4CAF50; text-align: center;'>"
+                f"<h3>Memorize the grid! <i>(creation mode)</i></h3>"
+                f"<p>Please study and memorize this grid pattern as much as you can.</p>"
+                f"<p>On the next page, you will have to reproduce it from memory.</p>"
+                f"<div style='padding: 15px; margin: 10px 0; text-align: center;'>"
                 f"<strong>Original Pattern:</strong><br>{grid_to_html(self.context['original'])}"
                 f"</div>"
             ),
@@ -304,14 +316,13 @@ class GridCreateTrial(CreateTrialMixin, ImitationChainTrial):
             prefill_grid = self.definition['last_choice']
 
         text = Markup(
-            f"<h3>Now, reproduce the grid!</h3>"
-            f"<p>Please reproduce the grid you just saw below. Then, another participant <b>who has not seen the original</b> will see multiple proposals, including yours, and decide which is most likely correct. Can you beat the others?</p>"
-            f"<p><strong>Instructions:</strong> Click cells to toggle between black and white.</p>"
+            f"<h3>Now, reproduce the grid! <i>(creation mode)</i></h3>"
+            f"<p>Please reproduce the grid you just saw.</p>"
+            f"<p>Next, another participant <b>who has not seen the original</b> will compare your grid to other proposals, and choose which is most likely correct. Can you beat the other participants?</p>"
         ) if generation == 0 else Markup(
-            f"<h3>Now, reproduce the grid!</h3>"
-            f"<p>Please reproduce the grid you just saw below. Then, another participant <b>who has not seen the original</b> will see multiple proposals, including yours, and decide which is most likely correct. Can you beat the others?</p>"
-            f"<p>You are starting from the grid that was chosen last.</p>"
-            f"<p><strong>Instructions:</strong> Click cells to toggle between black and white.</p>"
+            f"<h3>Now, reproduce the grid! <i>(creation mode)</i></h3>"
+            f"<p>Please reproduce the grid you just saw.</p>"
+            f"<p>Next, another participant <b>who has not seen the original</b> will compare your grid to other proposals, and choose which is most likely correct. Can you beat the other participants?</p>"            f"<p>You are starting from the grid that was chosen last.</p>"
         )
 
         return GridInputPage(
@@ -349,7 +360,7 @@ class GridCreateTrial(CreateTrialMixin, ImitationChainTrial):
 
 class GridSelectTrial(SelectTrialMixin, ImitationChainTrial):
     """Trial class specifically for grid selection tasks"""
-    time_estimate = 5
+    time_estimate = 60
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -362,7 +373,7 @@ class GridSelectTrial(SelectTrialMixin, ImitationChainTrial):
         return ModularPage(
             "choice",
             Prompt(Markup(
-                "<h3>Choose the most accurate</h3>"
+                "<h3>Choose the most accurate <i>(selection mode)</i></h3>"
                 f"<p>{N_CREATORS_PER_GENERATION} participants have attempted to reproduce a grid from memory.</p>"
                 "<p>Without having seen the original grid, try and choose the proposal you believe to be its most accurate reproduction.</p>"
                 "<div style='display: flex; justify-content: center; gap: 20px; flex-wrap: wrap; margin: 20px 0;'>"
@@ -458,11 +469,114 @@ trial_maker = GridTrialMaker(
 )
 
 
+# Add this new trial maker class after the existing GridTrialMaker
+class GridImitationChainTrialMaker(ImitationChainTrialMaker):
+    """Simple imitation chain trial maker with one creator per generation"""
+
+    def __init__(self, n_grids: int, grid_size: int = 10, *args, **kwargs):
+        # Create initial seed grids
+        start_nodes = [GridImitationNode(size=grid_size, random=True) for _ in range(n_grids)]
+
+        super().__init__(
+            start_nodes=start_nodes,
+            node_class=GridImitationNode,
+            trial_class=GridCreateTrial,  # Use the new imitation trial class
+            chains_per_experiment=n_grids,
+            expected_trials_per_participant=n_grids / N_CREATORS_PER_GENERATION,
+            max_trials_per_participant=n_grids / N_CREATORS_PER_GENERATION,
+            max_nodes_per_chain=N_GENERATIONS,
+            balance_across_chains=False,
+            check_performance_at_end=True,
+            check_performance_every_trial=False,
+            propagate_failure=False,
+            recruit_mode="n_trials",
+            target_n_participants=None,
+            wait_for_networks=False,
+            allow_revisiting_networks_in_across_chains=False,
+            id_="grid_imitation_chain_trial_maker",
+            chain_type="across",
+            trials_per_node=1,
+            *args,
+            **kwargs
+        )
+
+    def finalize_trial(self, answer, trial, experiment, participant):
+        """Record accuracy when finalizing trials"""
+        super().finalize_trial(answer, trial, experiment, participant)
+
+        # Calculate and store accuracy for the trial
+        trial.var.accuracy = int(GridNode.accuracy(trial.context["original"], trial.answer))
+
+
+# Create the simple imitation chain trial maker instance
+simple_trial_maker = GridImitationChainTrialMaker(
+    n_grids=N_GRIDS,
+    grid_size=10,
+)
+
+
+class PseudonymInputPage(ModularPage):
+    def __init__(self):
+        self.n_digits = 7
+
+        super().__init__(
+            "pseudo",
+            Prompt("Please select a pseudonym (anonymous or not) to checkout your results later."),
+            control=TextControl(
+                block_copy_paste=False,
+                bot_response=''.join(random.choices([str(i) for i in range(10)], k=12)),
+            ),
+            time_estimate=10,
+        )
+
+    def format_answer(self, raw_answer, **kwargs):
+        pseudonyms = Response.query.filter_by(
+            question="pseudo"
+        ).all()
+
+        pseudonyms = [pseudo.answer for pseudo in pseudonyms]
+        print(pseudonyms)
+
+        if raw_answer not in pseudonyms:
+            return raw_answer
+        else:
+            return "INVALID_RESPONSE"
+
+    def validate(self, response, **kwargs):
+        if response.answer == "INVALID_RESPONSE":
+            return FailedValidation("This pseudonym was already used!")
+
+        return None
+
+
 class Exp(psynet.experiment.Experiment):
     label = "Grid pattern transmission experiment"
 
     timeline = Timeline(
         MainConsent(),
+        InfoPage(
+            Markup(
+                f"<h3>The game</h3>"
+                f"<p>You will play this game sometimes in <i>creation mode</i>, and sometimes in <i>selection</i> mode.</p>"
+                f"<h4>Creation mode</h4>"
+                f"<p>In this mode, you will see a grid pattern, and you will have to reproduce it from memory (it is not expected that you can remember all of it, but try your best). </p>"
+                f"<p>Another participant, who has not seen the original grid, will compare your grid to other proposals, and choose which is most likely correct. Your goal is to have your proposal selected as many times as possible!</p>"
+                f"<p>Often, your grid will be pre-filled based on the last selected proposal.</p>"
+                f"<div style='display: flex'>"
+                f"<div style='display: block; border: 1px solid black; margin: 2px'><img style='display: block;' src='/static/images/create1.png' width='260px' /></div>"
+                f"<div style='display: block; border: 1px solid black; margin: 2px'><img style='display: block;' src='/static/images/create2.png' width='235px' /></div>"
+                f"</div>"
+                f"<h4>Selection mode</h4>"
+                f"<p>In this mode, you will see several attempts to reproduce a grid, and you will have to guess which is the most accurate.</p>"
+                f"<p>In this mode, you will <b>never</b> see the original!</p>"
+                f"<div style='display: flex'>"
+                f"<img style='display: block; border: 1px solid black; margin: 2px' width='342px' src='/static/images/select.png' />"
+                f"</div>"
+            ),
+            time_estimate=45,
+        ),
+        PseudonymInputPage(),
         trial_maker,
+        simple_trial_maker,
         SuccessfulEndPage(),
     )
