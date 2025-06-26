@@ -2,7 +2,7 @@
 
 from markupsafe import Markup
 import psynet.experiment
-from psynet.consent import NoConsent, MainConsent
+from psynet.consent import VoluntaryWithNoCompensationConsent
 from psynet.modular_page import Prompt, ModularPage, PushButtonControl, Control, TextControl
 from psynet.page import InfoPage, SuccessfulEndPage
 from psynet.timeline import FailedValidation, Timeline, Response
@@ -29,8 +29,8 @@ from typing import List
 logger = get_logger()
 
 N_CREATORS_PER_GENERATION = 3
-N_GRIDS = 12
-# N_GRIDS = 3
+# N_GRIDS = 12
+N_GRIDS = 4
 N_GENERATIONS = 9
 
 
@@ -135,8 +135,16 @@ class GridNode(ArtefactNode):
         return "grid"
 
     def random(self, size: int):
-        """Generate random grid with 0s and 1s (white and black)"""
-        return np.random.choice([0, 1], size=(size, size), p=[0.8, 0.2]).tolist()
+        """Generate random grid with exactly 24% cells == 1 and 80% == 0"""
+        total_cells = size * size
+        num_ones = int(total_cells * 0.24)
+        num_zeros = total_cells - num_ones
+
+        flat_grid = [1] * num_ones + [0] * num_zeros
+        np.random.shuffle(flat_grid)
+        grid = np.array(flat_grid).reshape(size, size)
+
+        return grid.tolist()
 
     def _validate_grid_format(self, grid_data):
         """Validate grid format with assertions"""
@@ -289,19 +297,50 @@ class GridCreateTrial(CreateTrialMixin, ImitationChainTrial):
         super().__init__(*args, **kwargs)
         self.var.accuracy = None
 
-    def trial(self):
-        """First trial - show original grid"""
+    def first_trial(self):
+        """First trial - show original grid only with greenish background"""
         return InfoPage(
             Markup(
                 f"<h3>Memorize the grid! <i>(creation mode)</i></h3>"
                 f"<p>Please study and memorize this grid pattern as much as you can.</p>"
                 f"<p>On the next page, you will have to reproduce it from memory.</p>"
-                f"<div style='padding: 15px; margin: 10px 0; text-align: center;'>"
+                f"<div style='display: flex; justify-content: center; margin: 20px 0;'>"
+                f"<div style='padding: 15px; margin: 10px; text-align: center; background: #e8f5e8; border-radius: 5px; border-left: 4px solid #4CAF50;'>"
                 f"<strong>Original Pattern:</strong><br>{grid_to_html(self.context['original'])}"
+                f"</div>"
                 f"</div>"
             ),
             time_estimate=self.time_estimate,
         )
+
+    def other_trial(self):
+        """Subsequent trials - show original + last winning grid side by side"""
+        generation = self.definition["generation"]
+        return InfoPage(
+            Markup(
+                f"<h3>Memorize the grid! <i>(creation mode)</i></h3>"
+                f"<p>Please study and memorize this grid pattern as much as you can.</p>"
+                f"<p>On the next page, you will have to reproduce it from memory.</p>"
+                f"<div style='display: flex; justify-content: center; gap: 20px; margin: 20px 0; flex-wrap: wrap;'>"
+                f"<div style='padding: 15px; text-align: center; background: #e8f5e8; border-radius: 5px; border-left: 4px solid #4CAF50;'>"
+                f"<strong>Original Pattern:</strong><br>{grid_to_html(self.context['original'])}"
+                f"</div>"
+                f"<div style='padding: 15px; text-align: center; background: #fff3cd; border-radius: 5px; border-left: 4px solid #ffc107;'>"
+                f"<strong>Last Selected Pattern:</strong><br>{grid_to_html(self.definition['last_choice'])}"
+                f"</div>"
+                f"</div>"
+            ),
+            time_estimate=self.time_estimate,
+        )
+
+    def trial(self):
+        """Show appropriate trial based on generation"""
+        generation = self.definition["generation"]
+
+        if generation == 0:
+            return self.first_trial()
+        else:
+            return self.other_trial()
 
     def input_page(self):
         """Input page for grid creation"""
@@ -322,7 +361,8 @@ class GridCreateTrial(CreateTrialMixin, ImitationChainTrial):
         ) if generation == 0 else Markup(
             f"<h3>Now, reproduce the grid! <i>(creation mode)</i></h3>"
             f"<p>Please reproduce the grid you just saw.</p>"
-            f"<p>Next, another participant <b>who has not seen the original</b> will compare your grid to other proposals, and choose which is most likely correct. Can you beat the other participants?</p>"            f"<p>You are starting from the grid that was chosen last.</p>"
+            f"<p>Next, another participant <b>who has not seen the original</b> will compare your grid to other proposals, and choose which is most likely correct. Can you beat the other participants?</p>"
+            f"<p>You are starting from the grid that was chosen last.</p>"
         )
 
         return GridInputPage(
@@ -335,8 +375,7 @@ class GridCreateTrial(CreateTrialMixin, ImitationChainTrial):
 
     def show_trial(self, experiment, participant):
         """Show the complete grid creation trial"""
-        info_page = self.trial()
-
+        info_page = self.trial()  # Now uses the modified trial() method
         input_page = self.input_page()
         return [info_page, input_page]
 
@@ -521,7 +560,7 @@ class PseudonymInputPage(ModularPage):
 
         super().__init__(
             "pseudo",
-            Prompt("Please select a pseudonym (anonymous or not) to checkout your results later."),
+            Prompt("Please select an anonymous pseudonym to discover your performance once the experiment is over. Leave empty if you do not want to."),
             control=TextControl(
                 block_copy_paste=False,
                 bot_response=''.join(random.choices([str(i) for i in range(10)], k=12)),
@@ -537,7 +576,7 @@ class PseudonymInputPage(ModularPage):
         pseudonyms = [pseudo.answer for pseudo in pseudonyms]
         print(pseudonyms)
 
-        if raw_answer not in pseudonyms:
+        if raw_answer == "" or raw_answer not in pseudonyms:
             return raw_answer
         else:
             return "INVALID_RESPONSE"
@@ -550,17 +589,17 @@ class PseudonymInputPage(ModularPage):
 
 
 class Exp(psynet.experiment.Experiment):
-    label = "Grid pattern transmission experiment"
+    label = "Grid pattern transmission game"
 
     timeline = Timeline(
-        MainConsent(),
+        VoluntaryWithNoCompensationConsent(),
         InfoPage(
             Markup(
                 f"<h3>The game</h3>"
-                f"<p>You will play this game sometimes in <i>creation mode</i>, and sometimes in <i>selection</i> mode.</p>"
+                f"<p>You will play this game sometimes in <i>creation mode</i>, and maybe sometimes in <i>selection</i> mode.</p>"
                 f"<h4>Creation mode</h4>"
                 f"<p>In this mode, you will see a grid pattern, and you will have to reproduce it from memory (it is not expected that you can remember all of it, but try your best). </p>"
-                f"<p>Another participant, who has not seen the original grid, will compare your grid to other proposals, and choose which is most likely correct. Your goal is to have your proposal selected as many times as possible!</p>"
+                f"<p>Another participant, who has <i>never</i> seen the original, will compare your grid to other proposals, and choose which is most likely correct. Your goal is to have your proposal selected as many times as possible!</p>"
                 f"<p>Often, your grid will be pre-filled based on the last selected proposal.</p>"
                 f"<div style='display: flex'>"
                 f"<div style='display: block; border: 1px solid black; margin: 2px'><img style='display: block;' src='/static/images/create1.png' width='260px' /></div>"
