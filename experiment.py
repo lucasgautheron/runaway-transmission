@@ -28,10 +28,12 @@ from typing import List
 
 logger = get_logger()
 
+N_TRIALS_PER_PARTICIPANT = 12
 N_CREATORS_PER_GENERATION = 3
-# N_GRIDS = 12
-N_GRIDS = 4
+N_GRIDS = 12
 N_GENERATIONS = 9
+
+assert N_TRIALS_PER_PARTICIPANT % (N_CREATORS_PER_GENERATION + 1) == 0
 
 
 # Utility function for grid HTML generation (no database interaction)
@@ -291,7 +293,7 @@ class GridImitationNode(GridNode):
 
 class GridCreateTrial(CreateTrialMixin, ImitationChainTrial):
     """Trial class specifically for grid creation tasks"""
-    time_estimate = 60
+    time_estimate = 45
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -399,7 +401,7 @@ class GridCreateTrial(CreateTrialMixin, ImitationChainTrial):
 
 class GridSelectTrial(SelectTrialMixin, ImitationChainTrial):
     """Trial class specifically for grid selection tasks"""
-    time_estimate = 60
+    time_estimate = 45
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -491,8 +493,8 @@ trial_maker = GridTrialMaker(
     verbose=True,
     id_="grid_trial_maker",
     chain_type="across",
-    expected_trials_per_participant=N_GRIDS,
-    max_trials_per_participant=N_GRIDS,
+    expected_trials_per_participant=N_TRIALS_PER_PARTICIPANT,
+    max_trials_per_participant=N_TRIALS_PER_PARTICIPANT,
     n_grids=N_GRIDS,
     grid_size=10,
     chains_per_experiment=N_GRIDS,
@@ -521,8 +523,8 @@ class GridImitationChainTrialMaker(ImitationChainTrialMaker):
             node_class=GridImitationNode,
             trial_class=GridCreateTrial,  # Use the new imitation trial class
             chains_per_experiment=n_grids,
-            expected_trials_per_participant=n_grids / (N_CREATORS_PER_GENERATION + 1),
-            max_trials_per_participant=n_grids / (N_CREATORS_PER_GENERATION + 1),
+            expected_trials_per_participant=N_TRIALS_PER_PARTICIPANT / (N_CREATORS_PER_GENERATION + 1),
+            max_trials_per_participant=N_TRIALS_PER_PARTICIPANT / (N_CREATORS_PER_GENERATION + 1),
             max_nodes_per_chain=N_GENERATIONS,
             balance_across_chains=False,
             check_performance_at_end=True,
