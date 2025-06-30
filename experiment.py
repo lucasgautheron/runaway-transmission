@@ -7,7 +7,6 @@ from psynet.modular_page import Prompt, ModularPage, PushButtonControl, Control,
 from psynet.page import InfoPage, SuccessfulEndPage
 from psynet.timeline import FailedValidation, Timeline, Response
 from psynet.trial.create_and_rate import (
-    CreateAndRateNode,
     CreateAndRateNodeMixin,
     CreateAndRateTrialMakerMixin,
     CreateTrialMixin,
@@ -16,8 +15,6 @@ from psynet.trial.create_and_rate import (
 from psynet.trial.imitation_chain import (
     ImitationChainTrial,
     ImitationChainTrialMaker,
-    ImitationChainNode,
-    ImitationChainNetwork,
 )
 from psynet.trial.chain import ChainNode
 from psynet.utils import get_logger
