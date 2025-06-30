@@ -26,13 +26,13 @@ import numpy as np
 import random
 from typing import List
 
-
 logger = get_logger()
 
-N_TRIALS_PER_PARTICIPANT = 12
+N_TRIALS_PER_PARTICIPANT = 16
 N_CREATORS_PER_GENERATION = 3
-N_GRIDS = 12
-N_GENERATIONS = 9
+N_RATERS = 1
+N_GRIDS = 16
+N_GENERATIONS = 16
 
 assert N_TRIALS_PER_PARTICIPANT % (N_CREATORS_PER_GENERATION + 1) == 0
 
@@ -52,21 +52,20 @@ def grid_to_html(grid_data: List[List[int]], cell_size="20px"):
 
 
 class ArtefactNode(ChainNode, CreateAndRateNodeMixin):
-    def __init__(self, artefact=None, **kwargs):
-        # Set context before calling super().__init__
+    def __init__(self,
+                 artefact=None, # Content of artefact (e.g. List[List[int]] for a grid, Str for a story,...
+                 **kwargs):
+
         if artefact is not None:
             kwargs['context'] = {"original": artefact, "artefact_type": self.get_artefact_type()}
 
         super().__init__(**kwargs)
         self.artefact = artefact
 
+
     def get_artefact_type(self):
         """Override in subclasses to specify artefact type"""
         raise NotImplementedError("Subclasses must implement get_artefact_type()")
-
-    def validate_artefact(self):
-        """Override in subclasses to validate artefact format"""
-        return True
 
     def create_initial_seed(self, experiment=None, participant=None):
         return {"generation": 0, "last_choice": ""}
@@ -74,10 +73,16 @@ class ArtefactNode(ChainNode, CreateAndRateNodeMixin):
     def create_definition_from_seed(self, seed, experiment, participant):
         return seed
 
+
 class GridNode(ArtefactNode):
     """Node class specifically for grid artefacts"""
 
-    def __init__(self, grid_data: List[List[int]] = None, size: int = 10, random: bool = False, **kwargs):
+    def __init__(self,
+                 grid_data: List[List[int]] = None, # grid content
+                 size: int = 10, # grid size
+                 random: bool = False, # random initialization
+                 **kwargs):
+
         if grid_data is None and random is True:
             grid_data = self.random(size)
 
@@ -98,7 +103,7 @@ class GridNode(ArtefactNode):
         return "grid"
 
     def random(self, size: int):
-        """Generate random grid with exactly 24% cells == 1 and 80% == 0"""
+        """Generate random grid with exactly 24% cells == 1 and 76% == 0"""
         total_cells = size * size
         num_ones = int(total_cells * 0.24)
         num_zeros = total_cells - num_ones
@@ -120,81 +125,73 @@ class GridNode(ArtefactNode):
             all(cell in [0, 1] for cell in row) for row in grid_data
         ), "All cells must be 0 (white) or 1 (black)"
 
-    def validate_artefact(self):
-        """Validate that grid is in correct format (non-asserting version)"""
-        if not isinstance(self.artefact, list):
-            return False
 
-        if len(self.artefact) == 0:
-            return False
-
-        for row in self.artefact:
-            if not isinstance(row, list):
-                return False
-            if len(row) != len(self.artefact):
-                return False
-            if not all(cell in [0, 1] for cell in row):
-                return False
-
-        return True
-
-    def html(self, cell_size="20px"):
-        """Generate HTML representation of grid"""
-        return grid_to_html(self.artefact, cell_size)
-
-    def get_html_display(self, cell_size="20px"):
-        """Get HTML representation of grid"""
-        return self.html(cell_size)
-
+    def _is_simple_imitation_chain(self):
+        """Check if this node belongs to the simple imitation chain trial maker"""
+        return hasattr(self, 'trial_maker') and self.trial_maker.id == "grid_imitation_chain_trial_maker"
 
     def summarize_trials(self, trials, experiment, participant):
-        trial_maker = self.trial_maker
+        """Summarize trials - behavior depends on trial maker type"""
 
-        all_rate_trials = trial_maker.rater_class.query.filter_by(
-            node_id=self.id, failed=False, finalized=True
-        ).all()
+        if self._is_simple_imitation_chain():
+            # Simple imitation chain: just use the trial answer directly
+            logger.warning(f"GridNode.summarize_trials: Simple imitation chain mode")
+            logger.warning(f"Trial answer: {trials[0].answer} (type: {type(trials[0].answer)})")
 
-        last_generation = max([trial.definition["generation"] for trial in all_rate_trials])
-        all_rate_trials = [trial for trial in all_rate_trials if trial.definition["generation"] == last_generation]
+            # Validate the trial answer
+            trial_answer = trials[0].answer
+            if not isinstance(trial_answer, list):
+                raise ValueError(f"Expected grid data (list), got {type(trial_answer)}: {trial_answer}")
 
-        all_targets = all_rate_trials[0].get_all_targets()
+            definition = self.seed.copy()
+            definition["generation"] += 1
+            definition["last_choice"] = trial_answer
 
-        count_dict = {i: 0 for i in range(len(all_targets))}
+            return definition
 
-        for trial in all_rate_trials:
-            if not isinstance(trial, SelectTrialMixin):
-                print("exclude ", trial)
-                continue
+        else:
+            # Create-and-rate mode: use selection logic
+            logger.warning(f"GridNode.summarize_trials: Create-and-rate mode")
+            trial_maker = self.trial_maker
 
-            # Find which target matches this trial's answer
-            for i, target in enumerate(all_targets):
-                if trial.answer == str(target):
-                    count_dict[i] += 1
-                    break
+            # Get all rate trials for this node, for the last generation
+            all_rate_trials = trial_maker.rater_class.query.filter_by(
+                node_id=self.id, failed=False, finalized=True
+            ).all()
 
-        # Get the index of the target with highest count
-        winning_index = max(count_dict, key=count_dict.get)
-        last_choice = all_targets[winning_index].answer
+            last_generation = max([trial.definition["generation"] for trial in all_rate_trials])
+            all_rate_trials = [trial for trial in all_rate_trials if trial.definition["generation"] == last_generation]
 
-        definition = self.seed.copy()
-        definition["generation"] += 1
-        definition["last_choice"] = last_choice
+            assert len(all_rate_trials) == N_RATERS
 
-        return definition
+            # Get all targets of the rate trials
+            all_targets = all_rate_trials[0].get_all_targets()
+            count_dict = {i: 0 for i in range(len(all_targets))}
 
-    @classmethod
-    def from_grid_data(cls, grid_data: List[List[int]], **kwargs):
-        """Create GridNode from existing grid data"""
-        return cls(grid_data=grid_data, **kwargs)
+            # For each rate trial, keep track of the selected target
+            for trial in all_rate_trials:
+                if not isinstance(trial, SelectTrialMixin):
+                    continue
 
-    @classmethod
-    def generate_random(cls, size: int = 10, **kwargs):
-        """Create GridNode with random pattern"""
-        return cls(size=size, random=True, **kwargs)
+                # Find which target matches this trial's answer
+                for i, target in enumerate(all_targets):
+                    if trial.answer == str(target):
+                        count_dict[i] += 1
+                        break
+
+            # Get the index of the target with highest count
+            winning_index = max(count_dict, key=count_dict.get)
+            last_choice = all_targets[winning_index].answer
+
+            # Seed for next generation
+            definition = self.seed.copy()
+            definition["generation"] += 1
+            definition["last_choice"] = last_choice
+
+            return definition
 
     @classmethod
     def accuracy(cls, truth, attempt):
-        """Create GridNode with random pattern"""
         truth = np.array(truth, dtype=int) * 1
         attempt = np.array(attempt, dtype=int) * 1
         return (truth == attempt).sum()
@@ -223,29 +220,30 @@ class GridReproductionControl(Control):
         missing = [[x[i], y[i]] for i in range(len(x))]
 
         # pick 6 elements to add
-        add = random.choices(missing, k=6)
+        if len(missing):
+            add = random.choices(missing, k=np.min([6, len(missing)]))
 
-        error_rate = 0.33
-        for x, y in add:
-            if np.random.uniform(0, 1) < error_rate:
-                x_possible = [x - 1, x + 1]
-                y_possible = [y - 1, y + 1]
-                x_possible = [x for x in x_possible if x >= 0 and x < self.grid_size]
-                y_possible = [y for y in y_possible if y >= 0 and y < self.grid_size]
+            error_rate = 0.33
+            for x, y in add:
+                if np.random.uniform(0, 1) < error_rate:
+                    x_possible = [x - 1, x + 1]
+                    y_possible = [y - 1, y + 1]
+                    x_possible = [x for x in x_possible if x >= 0 and x < self.grid_size]
+                    y_possible = [y for y in y_possible if y >= 0 and y < self.grid_size]
 
-                x_choice = np.random.choice(x_possible)
-                y_choice = np.random.choice(y_possible)
+                    x_choice = np.random.choice(x_possible)
+                    y_choice = np.random.choice(y_possible)
 
-                grid[x_choice, y_choice] = 1
-            else:
-                grid[x, y] = 1
+                    grid[x_choice, y_choice] = 1
+                else:
+                    grid[x, y] = 1
 
         # pick 1 elements to correct
         x, y, = np.nonzero((~self.truth) & grid)
         incorrect = [[x[i], y[i]] for i in range(len(x))]
 
         if len(incorrect) > 0:
-            correct = random.choices(incorrect, k=1)
+            correct = random.sample(incorrect, k=1)
 
             for x, y, in correct:
                 grid[x, y] = 0
@@ -308,19 +306,6 @@ class GridInputPage(ModularPage):
         return None
 
 
-class GridImitationNode(GridNode):
-    def summarize_trials(self, trials, experiment, participant):
-        definition = self.seed.copy()
-        definition["generation"] += 1
-        definition["last_choice"] = trials[0].answer
-        print("Summarize trials imitation:")
-        print(trials[0], trials[0].answer, trials[0].node_id)
-
-        np.array(trials[0].answer, dtype=int)
-
-        return definition
-
-
 class GridCreateTrial(CreateTrialMixin, ImitationChainTrial):
     """Trial class specifically for grid creation tasks"""
     time_estimate = 45
@@ -346,7 +331,6 @@ class GridCreateTrial(CreateTrialMixin, ImitationChainTrial):
         )
 
     def other_trial(self):
-        """Subsequent trials - show original + last winning grid side by side"""
         generation = self.definition["generation"]
         return InfoPage(
             Markup(
@@ -458,6 +442,7 @@ class GridSelectTrial(SelectTrialMixin, ImitationChainTrial):
         artefacts = self.get_all_targets()
 
         assert len({artefact.node_id for artefact in artefacts}) == 1, "All artefacts must be from the same node"
+        assert len(artefacts) == N_CREATORS_PER_GENERATION, "There must be exactly N_CREATORS_PER_GENERATION artefacts"
 
         return ModularPage(
             "choice",
@@ -505,7 +490,8 @@ class GridTrialMaker(CreateAndRateTrialMakerMixin, ImitationChainTrialMaker):
     """Trial maker specifically for grid experiments"""
 
     def __init__(self, n_grids: int, grid_size: int = 10, *args, **kwargs):
-        super().__init__(start_nodes=[GridNode(size=grid_size, random=True) for _ in range(n_grids)], *args, **kwargs)
+        super().__init__(start_nodes=[GridNode(size=grid_size, random=True) for _ in range(n_grids)],
+                         *args, **kwargs)
 
     def finalize_trial(self, answer, trial, experiment, participant):
         super().finalize_trial(answer, trial, experiment, participant)
@@ -531,7 +517,7 @@ class GridTrialMaker(CreateAndRateTrialMakerMixin, ImitationChainTrialMaker):
 # Experiment setup
 trial_maker = GridTrialMaker(
     n_creators=N_CREATORS_PER_GENERATION,
-    n_raters=1,
+    n_raters=N_RATERS,
     node_class=GridNode,
     creator_class=GridCreateTrial,
     rater_class=GridSelectTrial,
@@ -561,45 +547,42 @@ trial_maker = GridTrialMaker(
 class GridImitationChainTrialMaker(ImitationChainTrialMaker):
     """Simple imitation chain trial maker with one creator per generation"""
 
-    def __init__(self, n_grids: int, grid_size: int = 10, *args, **kwargs):
-        # Create initial seed grids
-        start_nodes = [GridImitationNode(size=grid_size, random=True) for _ in range(n_grids)]
+    class GridTrialMaker(CreateAndRateTrialMakerMixin, ImitationChainTrialMaker):
+        """Trial maker specifically for grid experiments"""
 
-        super().__init__(
-            start_nodes=start_nodes,
-            node_class=GridImitationNode,
-            trial_class=GridCreateTrial,  # Use the new imitation trial class
-            chains_per_experiment=n_grids,
-            expected_trials_per_participant=N_TRIALS_PER_PARTICIPANT / (N_CREATORS_PER_GENERATION + 1),
-            max_trials_per_participant=N_TRIALS_PER_PARTICIPANT / (N_CREATORS_PER_GENERATION + 1),
-            max_nodes_per_chain=N_GENERATIONS,
-            balance_across_chains=False,
-            check_performance_at_end=True,
-            check_performance_every_trial=False,
-            propagate_failure=False,
-            recruit_mode="n_trials",
-            target_n_participants=None,
-            wait_for_networks=False,
-            allow_revisiting_networks_in_across_chains=False,
-            id_="grid_imitation_chain_trial_maker",
-            chain_type="across",
-            trials_per_node=1,
-            *args,
-            **kwargs
-        )
+    def __init__(self, n_grids: int, grid_size: int = 10, *args, **kwargs):
+        super().__init__(start_nodes=[GridNode(size=grid_size, random=True) for _ in range(n_grids)],
+                         *args, **kwargs)
 
     def finalize_trial(self, answer, trial, experiment, participant):
         """Record accuracy when finalizing trials"""
         super().finalize_trial(answer, trial, experiment, participant)
 
-        # Calculate and store accuracy for the trial
-        trial.var.accuracy = int(GridNode.accuracy(trial.context["original"], trial.answer))
+        # Use answer parameter, not trial.answer
+        trial.var.accuracy = int(GridNode.accuracy(trial.context["original"], answer))
 
 
 # Create the simple imitation chain trial maker instance
 simple_trial_maker = GridImitationChainTrialMaker(
     n_grids=N_GRIDS,
     grid_size=10,
+    node_class=GridNode,
+    trial_class=GridCreateTrial,  # Use the new imitation trial class
+    chains_per_experiment=N_GRIDS,
+    expected_trials_per_participant=N_TRIALS_PER_PARTICIPANT / (N_CREATORS_PER_GENERATION + 1),
+    max_trials_per_participant=N_TRIALS_PER_PARTICIPANT / (N_CREATORS_PER_GENERATION + 1),
+    max_nodes_per_chain=N_GENERATIONS,
+    balance_across_chains=False,
+    check_performance_at_end=True,
+    check_performance_every_trial=False,
+    propagate_failure=False,
+    recruit_mode="n_trials",
+    target_n_participants=None,
+    wait_for_networks=False,
+    allow_revisiting_networks_in_across_chains=False,
+    id_="grid_imitation_chain_trial_maker",
+    chain_type="across",
+    trials_per_node=1,
 )
 
 
@@ -638,7 +621,7 @@ class PseudonymInputPage(ModularPage):
 
 class Exp(psynet.experiment.Experiment):
     label = "Grid pattern transmission game"
-    test_n_bots = 48
+    test_n_bots = 96
 
     timeline = Timeline(
         VoluntaryWithNoCompensationConsent(),
