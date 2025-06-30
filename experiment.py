@@ -53,15 +53,13 @@ def grid_to_html(grid_data: List[List[int]], cell_size="20px"):
 
 class ArtefactNode(ChainNode, CreateAndRateNodeMixin):
     def __init__(self,
-                 artefact=None, # Content of artefact (e.g. List[List[int]] for a grid, Str for a story,...
+                 artefact=None,  # Content of artefact (e.g. List[List[int]] for a grid, Str for a story,...
                  **kwargs):
-
         if artefact is not None:
             kwargs['context'] = {"original": artefact, "artefact_type": self.get_artefact_type()}
 
         super().__init__(**kwargs)
         self.artefact = artefact
-
 
     def get_artefact_type(self):
         """Override in subclasses to specify artefact type"""
@@ -78,9 +76,9 @@ class GridNode(ArtefactNode):
     """Node class specifically for grid artefacts"""
 
     def __init__(self,
-                 grid_data: List[List[int]] = None, # grid content
-                 size: int = 10, # grid size
-                 random: bool = False, # random initialization
+                 grid_data: List[List[int]] = None,  # grid content
+                 size: int = 10,  # grid size
+                 random: bool = False,  # random initialization
                  **kwargs):
 
         if grid_data is None and random is True:
@@ -124,7 +122,6 @@ class GridNode(ArtefactNode):
         assert all(
             all(cell in [0, 1] for cell in row) for row in grid_data
         ), "All cells must be 0 (white) or 1 (black)"
-
 
     def _is_simple_imitation_chain(self):
         """Check if this node belongs to the simple imitation chain trial maker"""
@@ -219,9 +216,21 @@ class GridReproductionControl(Control):
         x, y = np.nonzero(self.truth & (~grid))
         missing = [[x[i], y[i]] for i in range(len(x))]
 
-        # pick 6 elements to add
+        # pick elements to correct
+        x, y, = np.nonzero((~self.truth) & grid)
+        incorrect = [[x[i], y[i]] for i in range(len(x))]
+
+        if len(incorrect) > 0:
+            n_correct = np.random.poisson(1)
+            to_correct = random.sample(incorrect, k=np.minimum(n_correct, len(incorrect)))
+
+            for x, y, in to_correct:
+                grid[x, y] = 0
+
+        # pick elements to add
         if len(missing):
-            add = random.choices(missing, k=np.min([6, len(missing)]))
+            n_add = np.random.poisson(5)
+            add = random.choices(missing, k=np.minimum(n_add, len(missing)))
 
             error_rate = 0.33
             for x, y in add:
@@ -237,16 +246,6 @@ class GridReproductionControl(Control):
                     grid[x_choice, y_choice] = 1
                 else:
                     grid[x, y] = 1
-
-        # pick 1 elements to correct
-        x, y, = np.nonzero((~self.truth) & grid)
-        incorrect = [[x[i], y[i]] for i in range(len(x))]
-
-        if len(incorrect) > 0:
-            correct = random.sample(incorrect, k=1)
-
-            for x, y, in correct:
-                grid[x, y] = 0
 
         return grid.tolist()
 
@@ -373,11 +372,11 @@ class GridCreateTrial(CreateTrialMixin, ImitationChainTrial):
         text = Markup(
             f"<h3>Now, reproduce the grid! <i>(creation mode)</i></h3>"
             f"<p>Please reproduce the grid you just saw.</p>"
-            f"<p>Next, another participant <b>who has not seen the original</b> will compare your grid to other proposals, and choose which is most likely correct. Can you beat the other participants?</p>"
+            f"<p>Next, another participant <b>who has not seen the original</b> will compare your grid to other proposals, and choose which is most likely correct. Can you convince them that your proposal is the most accurate?</p>"
         ) if generation == 0 else Markup(
             f"<h3>Now, reproduce the grid! <i>(creation mode)</i></h3>"
             f"<p>Please reproduce the grid you just saw.</p>"
-            f"<p>Next, another participant <b>who has not seen the original</b> will compare your grid to other proposals, and choose which is most likely correct. Can you beat the other participants?</p>"
+            f"<p>Next, another participant <b>who has not seen the original</b> will compare your grid to other proposals, and choose which is most likely correct. Can you convince them that your proposal is the most accurate?</p>"
             f"<p>You are starting from the grid that was chosen last.</p>"
         )
 
@@ -424,19 +423,21 @@ class GridSelectTrial(SelectTrialMixin, ImitationChainTrial):
         self.var.accuracy = None
 
     def bot_response(self, artefacts):
-        accuracy = dict()
+        score = dict()
         for i, artefact in enumerate(artefacts):
-            accuracy[i] = 0
-            for j, artefact_compare in enumerate(artefacts):
-                if i == j:
-                    continue
+            score[i] = np.sum(self.get_target_answer(artefact))
+            # score[i] = 0
+            #
+            # for j, artefact_compare in enumerate(artefacts):
+            #     if i == j:
+            #         continue
+            #
+            #     score[i] += GridNode.accuracy(
+            #         self.get_target_answer(artefact),
+            #         self.get_target_answer(artefact_compare)
+            #     )
 
-                accuracy[i] += GridNode.accuracy(
-                    self.get_target_answer(artefact),
-                    self.get_target_answer(artefact_compare)
-                )
-
-        return str(artefacts[max(accuracy.keys(), key=accuracy.get)])
+        return str(artefacts[max(score.keys(), key=score.get)])
 
     def show_trial(self, experiment, participant):
         artefacts = self.get_all_targets()
