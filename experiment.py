@@ -26,6 +26,7 @@ import numpy as np
 import random
 from typing import List
 
+
 logger = get_logger()
 
 N_TRIALS_PER_PARTICIPANT = 12
@@ -36,7 +37,7 @@ N_GENERATIONS = 9
 assert N_TRIALS_PER_PARTICIPANT % (N_CREATORS_PER_GENERATION + 1) == 0
 
 
-# Utility function for grid HTML generation (no database interaction)
+# Utility function for grid HTML generation
 def grid_to_html(grid_data: List[List[int]], cell_size="20px"):
     """Generate HTML representation of grid without creating a node"""
     html = f'<div style="display: inline-block; border: 1px solid #333;">'
@@ -72,46 +73,6 @@ class ArtefactNode(ChainNode, CreateAndRateNodeMixin):
 
     def create_definition_from_seed(self, seed, experiment, participant):
         return seed
-
-    def summarize_trials(self, trials, experiment, participant):
-        logger.info(f"Summarizing trials for node {self.id}")
-        trial_maker = self.trial_maker
-
-        all_rate_trials = trial_maker.rater_class.query.filter_by(
-            node_id=self.id, failed=False, finalized=True
-        ).all()
-
-        last_generation = max([trial.definition["generation"] for trial in all_rate_trials])
-        all_rate_trials = [trial for trial in all_rate_trials if trial.definition["generation"] == last_generation]
-
-        all_targets = all_rate_trials[0].get_all_targets()
-
-        count_dict = {i: 0 for i in range(len(all_targets))}
-
-        for trial in all_rate_trials:
-            if not isinstance(trial, SelectTrialMixin):
-                print("exclude ", trial)
-                continue
-
-            # Find which target matches this trial's answer
-            for i, target in enumerate(all_targets):
-                print(trial.answer, str(target), target.answer)
-                if trial.answer == str(target):
-                    count_dict[i] += 1
-                    break
-
-        print(count_dict)
-
-        # Get the index of the target with highest count
-        winning_index = max(count_dict, key=count_dict.get)
-        last_choice = all_targets[winning_index].answer
-
-        definition = self.seed.copy()
-        definition["generation"] += 1
-        definition["last_choice"] = last_choice
-
-        return definition
-
 
 class GridNode(ArtefactNode):
     """Node class specifically for grid artefacts"""
@@ -185,6 +146,42 @@ class GridNode(ArtefactNode):
         """Get HTML representation of grid"""
         return self.html(cell_size)
 
+
+    def summarize_trials(self, trials, experiment, participant):
+        trial_maker = self.trial_maker
+
+        all_rate_trials = trial_maker.rater_class.query.filter_by(
+            node_id=self.id, failed=False, finalized=True
+        ).all()
+
+        last_generation = max([trial.definition["generation"] for trial in all_rate_trials])
+        all_rate_trials = [trial for trial in all_rate_trials if trial.definition["generation"] == last_generation]
+
+        all_targets = all_rate_trials[0].get_all_targets()
+
+        count_dict = {i: 0 for i in range(len(all_targets))}
+
+        for trial in all_rate_trials:
+            if not isinstance(trial, SelectTrialMixin):
+                print("exclude ", trial)
+                continue
+
+            # Find which target matches this trial's answer
+            for i, target in enumerate(all_targets):
+                if trial.answer == str(target):
+                    count_dict[i] += 1
+                    break
+
+        # Get the index of the target with highest count
+        winning_index = max(count_dict, key=count_dict.get)
+        last_choice = all_targets[winning_index].answer
+
+        definition = self.seed.copy()
+        definition["generation"] += 1
+        definition["last_choice"] = last_choice
+
+        return definition
+
     @classmethod
     def from_grid_data(cls, grid_data: List[List[int]], **kwargs):
         """Create GridNode from existing grid data"""
@@ -198,9 +195,8 @@ class GridNode(ArtefactNode):
     @classmethod
     def accuracy(cls, truth, attempt):
         """Create GridNode with random pattern"""
-        truth = np.array(truth) * 1
-        attempt = np.array(attempt) * 1
-
+        truth = np.array(truth, dtype=int) * 1
+        attempt = np.array(attempt, dtype=int) * 1
         return (truth == attempt).sum()
 
     def __repr__(self):
@@ -211,19 +207,48 @@ class GridReproductionControl(Control):
     macro = "grid_reproduction_control"
     external_template = "grid-reproduction.html"
 
-    def __init__(self, grid_size=8, prefill_grid=None, **kwargs):
+    def __init__(self, grid_size=8, prefill_grid=None, truth=List[List[int]], **kwargs):
         self.grid_size = grid_size
         self.prefill_grid = prefill_grid
+        self.truth = np.array(truth)
         super().__init__(**kwargs, bot_response=self.bot_response())
 
     def bot_response(self):
         if self.prefill_grid:
-            grid = np.array(self.prefill_grid)
+            grid = np.array(self.prefill_grid, dtype=int)
         else:
-            grid = np.random.choice([0, 1], size=(self.grid_size, self.grid_size), p=[0.8, 0.2])
+            grid = np.zeros((self.grid_size, self.grid_size), dtype=int)
 
-        x, y = np.random.choice(self.grid_size, 2)
-        grid[x, y] = 1 - grid[x, y]
+        x, y = np.nonzero(self.truth & (~grid))
+        missing = [[x[i], y[i]] for i in range(len(x))]
+
+        # pick 6 elements to add
+        add = random.choices(missing, k=6)
+
+        error_rate = 0.33
+        for x, y in add:
+            if np.random.uniform(0, 1) < error_rate:
+                x_possible = [x - 1, x + 1]
+                y_possible = [y - 1, y + 1]
+                x_possible = [x for x in x_possible if x >= 0 and x < self.grid_size]
+                y_possible = [y for y in y_possible if y >= 0 and y < self.grid_size]
+
+                x_choice = np.random.choice(x_possible)
+                y_choice = np.random.choice(y_possible)
+
+                grid[x_choice, y_choice] = 1
+            else:
+                grid[x, y] = 1
+
+        # pick 1 elements to correct
+        x, y, = np.nonzero((~self.truth) & grid)
+        incorrect = [[x[i], y[i]] for i in range(len(x))]
+
+        if len(incorrect) > 0:
+            correct = random.choices(incorrect, k=1)
+
+            for x, y, in correct:
+                grid[x, y] = 0
 
         return grid.tolist()
 
@@ -236,13 +261,15 @@ class GridReproductionControl(Control):
 
 
 class GridInputPage(ModularPage):
-    def __init__(self, label: str, prompt: str, time_estimate: float, prefill_grid=None, grid_size: int = 10):
+    def __init__(self, label: str, prompt: str, time_estimate: float, prefill_grid=None, truth: List[List[int]] = None,
+                 grid_size: int = 10):
         super().__init__(
             label,
             Prompt(prompt),
             control=GridReproductionControl(
                 grid_size=grid_size,
-                prefill_grid=prefill_grid
+                prefill_grid=prefill_grid,
+                truth=truth
             ),
             time_estimate=time_estimate,
         )
@@ -283,10 +310,13 @@ class GridInputPage(ModularPage):
 
 class GridImitationNode(GridNode):
     def summarize_trials(self, trials, experiment, participant):
-        print(self.seed)
         definition = self.seed.copy()
         definition["generation"] += 1
         definition["last_choice"] = trials[0].answer
+        print("Summarize trials imitation:")
+        print(trials[0], trials[0].answer, trials[0].node_id)
+
+        np.array(trials[0].answer, dtype=int)
 
         return definition
 
@@ -372,6 +402,7 @@ class GridCreateTrial(CreateTrialMixin, ImitationChainTrial):
             text,
             time_estimate=120,
             prefill_grid=prefill_grid,
+            truth=self.context["original"],
             grid_size=grid_size,
         )
 
@@ -408,8 +439,25 @@ class GridSelectTrial(SelectTrialMixin, ImitationChainTrial):
         self.var.success = None
         self.var.accuracy = None
 
+    def bot_response(self, artefacts):
+        accuracy = dict()
+        for i, artefact in enumerate(artefacts):
+            accuracy[i] = 0
+            for j, artefact_compare in enumerate(artefacts):
+                if i == j:
+                    continue
+
+                accuracy[i] += GridNode.accuracy(
+                    self.get_target_answer(artefact),
+                    self.get_target_answer(artefact_compare)
+                )
+
+        return str(artefacts[max(accuracy.keys(), key=accuracy.get)])
+
     def show_trial(self, experiment, participant):
         artefacts = self.get_all_targets()
+
+        assert len({artefact.node_id for artefact in artefacts}) == 1, "All artefacts must be from the same node"
 
         return ModularPage(
             "choice",
@@ -428,7 +476,7 @@ class GridSelectTrial(SelectTrialMixin, ImitationChainTrial):
                 choices=artefacts,
                 labels=[f"Version {i + 1}" for i in range(len(artefacts))],
                 arrange_vertically=False,
-                bot_response=lambda: random.choice(self.targets),
+                bot_response=lambda: self.bot_response(artefacts),
             ),
             time_estimate=30,
         )
@@ -510,7 +558,6 @@ trial_maker = GridTrialMaker(
 )
 
 
-# Add this new trial maker class after the existing GridTrialMaker
 class GridImitationChainTrialMaker(ImitationChainTrialMaker):
     """Simple imitation chain trial maker with one creator per generation"""
 
@@ -558,11 +605,10 @@ simple_trial_maker = GridImitationChainTrialMaker(
 
 class PseudonymInputPage(ModularPage):
     def __init__(self):
-        self.n_digits = 7
-
         super().__init__(
             "pseudo",
-            Prompt("Please select an anonymous pseudonym to discover your performance once the experiment is over. Leave empty if you do not want to."),
+            Prompt(
+                "Please select an anonymous pseudonym to discover your performance once the experiment is over. Leave empty if you do not want to."),
             control=TextControl(
                 block_copy_paste=False,
                 bot_response=''.join(random.choices([str(i) for i in range(10)], k=12)),
@@ -592,6 +638,7 @@ class PseudonymInputPage(ModularPage):
 
 class Exp(psynet.experiment.Experiment):
     label = "Grid pattern transmission game"
+    test_n_bots = 48
 
     timeline = Timeline(
         VoluntaryWithNoCompensationConsent(),
