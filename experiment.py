@@ -2,13 +2,13 @@
 
 from markupsafe import Markup
 import psynet.experiment
-from psynet.consent import VoluntaryWithNoCompensationConsent
+from psynet.consent import MainConsent
 from psynet.modular_page import (
     Prompt, ModularPage, PushButtonControl, Control,
-    TextControl,
 )
 from psynet.page import InfoPage, SuccessfulEndPage
 from psynet.timeline import FailedValidation, Timeline, Response, Event
+
 from psynet.trial.create_and_rate import (
     CreateAndRateNodeMixin,
     CreateAndRateTrialMakerMixin,
@@ -25,24 +25,31 @@ from psynet.utils import get_logger
 import numpy as np
 import random
 from typing import List
+import json
 
 logger = get_logger()
 
-GRID_SIZE = 12
-GRID_FILL = 1
-VIEW_GRID_TIME = 30
+GRID_SIZE = 16
+GRID_FILL = 48
+MAX_ACCURACY = GRID_SIZE * GRID_SIZE
+VIEW_GRID_TIME = 10
+CREATOR_FEEDBACK = False  # tell creators how well they've done after each trial
+CONDITION = "gap"
+
+assert CONDITION in ["gap", "baseline"]
 
 # N_TRIALS_PER_PARTICIPANT = 16
 # N_CREATORS_PER_GENERATION = 3
 # N_RATERS = 1
 # N_GRIDS = 16
 # N_GENERATIONS = 16
-N_TRIALS_PER_PARTICIPANT = 1
+N_TRIALS_PER_PARTICIPANT = 20
 N_CREATORS_PER_GENERATION = 3
 N_RATERS = 1
-N_GRIDS = 1
+N_GRIDS = 20
 N_GENERATIONS = 16
-
+RECRUITER = "hotair"
+DURATION_ESTIMATE = 120 + N_TRIALS_PER_PARTICIPANT*(VIEW_GRID_TIME+30)
 
 # assert N_TRIALS_PER_PARTICIPANT % (N_CREATORS_PER_GENERATION + 1) == 0
 
@@ -158,10 +165,10 @@ class GridNode(ArtefactNode):
 
         if self._is_simple_imitation_chain():
             # Simple imitation chain: just use the trial answer directly
-            logger.warning(
+            logger.info(
                 f"GridNode.summarize_trials: Simple imitation chain mode",
             )
-            logger.warning(
+            logger.info(
                 f"Trial answer: {trials[0].answer} (type: {type(trials[0].answer)})",
             )
 
@@ -181,7 +188,7 @@ class GridNode(ArtefactNode):
 
         else:
             # Create-and-rate mode: use selection logic
-            logger.warning(f"GridNode.summarize_trials: Create-and-rate mode")
+            logger.info(f"GridNode.summarize_trials: Create-and-rate mode")
             trial_maker = self.trial_maker
 
             # Get all rate trials for this node, for the last generation
@@ -362,14 +369,14 @@ class GridDisplayPage(InfoPage):
             events={
                 "responseEnable": Event(
                     is_triggered_by="trialStart",
-                    delay=30,
+                    delay=VIEW_GRID_TIME,
                     js="onNextButton();",
                 ),
                 "startProgressTimer": Event(
                     is_triggered_by="trialStart",
                     delay=0,
-                    js="""
-                    var totalTime = 30;
+                    js=f"var totalTime = {VIEW_GRID_TIME};"
+                       + """
                     var timeLeft = totalTime;
                     var progressBar = document.getElementById('progress-bar');
                     var timeText = document.getElementById('time-text');
@@ -394,7 +401,7 @@ class GridDisplayPage(InfoPage):
 
 class GridCreateTrial(CreateTrialMixin, ImitationChainTrial):
     """Trial class specifically for grid creation tasks"""
-    time_estimate = 45
+    time_estimate = 30 + VIEW_GRID_TIME + 1
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -409,11 +416,11 @@ class GridCreateTrial(CreateTrialMixin, ImitationChainTrial):
                 f"<p>On the next page, you will have to reproduce it from memory.</p>"
                 f"<div>"
                 f"<div id='progress-bar' style='height: 20px; background: linear-gradient(90deg, #dc3545, #ffc107, #28a745); border-radius: 7px; width: 100%; transition: width 0.1s;'></div>"
-                f"<div id='time-text' style='text-align: center; margin-top: 5px; font-weight: bold;'>30 seconds remaining</div>"
+                f"<div id='time-text' style='text-align: center; margin-top: 5px; font-weight: bold;'>{VIEW_GRID_TIME} seconds remaining</div>"
                 f"</div>"
                 f"<div style='display: flex; justify-content: center; margin: 20px 0;'>"
-                f"<div style='padding: 15px; margin: 10px; text-align: center; background: #e8f5e8; border-radius: 5px; border-left: 4px solid #4CAF50;'>"
-                f"<strong>Original Pattern:</strong><br>{grid_to_html(self.context['original'])}"
+                f"<div style='padding: 5px 10px 10px 10px; margin: 10px; text-align: center; background: #e8f5e8; border-radius: 5px; border-left: 4px solid #4CAF50;'>"
+                f"<strong>Original pattern:</strong><br>{grid_to_html(self.context['original'])}"
                 f"</div>"
                 f"</div>",
             ),
@@ -428,14 +435,14 @@ class GridCreateTrial(CreateTrialMixin, ImitationChainTrial):
                 f"<p>On the next page, you will have to reproduce it from memory.</p>"
                 f"<div>"
                 f"<div id='progress-bar' style='height: 20px; background: linear-gradient(90deg, #dc3545, #ffc107, #28a745); border-radius: 7px; width: 100%; transition: width 0.1s;'></div>"
-                f"<div id='time-text' style='text-align: center; margin-top: 5px; font-weight: bold;'>30 seconds remaining</div>"
+                f"<div id='time-text' style='text-align: center; margin-top: 5px; font-weight: bold;'>{VIEW_GRID_TIME} seconds remaining</div>"
                 f"</div>"
                 f"<div style='display: flex; justify-content: center; gap: 20px; margin: 20px 0; flex-wrap: wrap;'>"
-                f"<div style='padding: 15px; text-align: center; background: #e8f5e8; border-radius: 5px; border-left: 4px solid #4CAF50;'>"
-                f"<strong>Original Pattern:</strong><br>{grid_to_html(self.context['original'])}"
+                f"<div style='padding: 5px 10px 10px 10px; text-align: center; background: #e8f5e8; border-radius: 5px; border-left: 4px solid #4CAF50;'>"
+                f"<strong>Original pattern:</strong><br>{grid_to_html(self.context['original'])}"
                 f"</div>"
-                f"<div style='padding: 15px; text-align: center; background: #fff3cd; border-radius: 5px; border-left: 4px solid #ffc107;'>"
-                f"<strong>Last Selected Pattern:</strong><br>{grid_to_html(self.definition['last_choice'])}"
+                f"<div style='padding: 5px 10px 10px 10px; text-align: center; background: #fff3cd; border-radius: 5px; border-left: 4px solid #ffc107;'>"
+                f"<strong>Starting point:</strong><br>{grid_to_html(self.definition['last_choice'])}"
                 f"</div>"
                 f"</div>",
             ),
@@ -468,15 +475,14 @@ class GridCreateTrial(CreateTrialMixin, ImitationChainTrial):
             f"<p>Next, another participant <b>who has not seen the original</b> will compare your grid to other proposals, and choose which is most likely correct. Can you convince them that your proposal is the most accurate?</p>",
         ) if generation == 0 else Markup(
             f"<h3>Now, reproduce the grid! <i>(creation mode)</i></h3>"
-            f"<p>Please reproduce the grid you just saw.</p>"
-            f"<p>Next, another participant <b>who has not seen the original</b> will compare your grid to other proposals, and choose which is most likely correct. Can you convince them that your proposal is the most accurate?</p>"
-            f"<p>You are starting from the grid that was chosen last.</p>",
+            f"<p>Please reproduce the grid you just saw. You are starting from the grid that was chosen last</p>"
+            f"<p>Next, another participant <b>who has not seen the original</b> will compare your grid to other proposals, and choose which is most likely correct. Can you convince them that your proposal is the most accurate?</p>",
         )
 
         return GridInputPage(
             "artefact",
             text,
-            time_estimate=120,
+            time_estimate=30,
             prefill_grid=prefill_grid,
             truth=self.context["original"],
             grid_size=grid_size,
@@ -495,6 +501,11 @@ class GridCreateTrial(CreateTrialMixin, ImitationChainTrial):
         return self.var.accuracy
 
     def show_feedback(self, experiment, participant):
+        if CREATOR_FEEDBACK == False:
+            return InfoPage(
+                "Proposal received, thank you! Click 'next' when you are ready to see the next grid.",
+            )
+
         if self.definition['generation'] == 0:
             return
 
@@ -615,40 +626,16 @@ class GridTrialMaker(CreateAndRateTrialMakerMixin, ImitationChainTrialMaker):
             network.full = True
 
         return grown
-    #
-    # def custom_network_filter(self, candidates, participant):
-    #     for candidate in candidates:
-    #         logger.info(f"node_id: {candidate.head.id}")
-    #         logger.info(candidate.head.definition["accuracy"])
-    #
-    #     candidates = [
-    #         candidate
-    #         for candidate in candidates
-    #         if candidate.head.definition["accuracy"] < GRID_SIZE * GRID_SIZE
-    #     ]
-    #     return candidates
 
 
 class GridBaselineTrialMaker(ImitationChainTrialMaker):
     def grow_network(self, network, experiment):
         grown = super().grow_network(network, experiment)
 
-        if network.head.definition["accuracy"] == GRID_SIZE * GRID_SIZE:
+        if network.head.definition["accuracy"] >= MAX_ACCURACY:
             network.full = True
 
         return grown
-
-    # def custom_network_filter(self, candidates, participant):
-    #     for candidate in candidates:
-    #         logger.info(f"node_id: {candidate.head.id}")
-    #         logger.info(candidate.head.definition["accuracy"])
-    #
-    #     candidates = [
-    #         candidate
-    #         for candidate in candidates
-    #         if candidate.head.definition["accuracy"] < GRID_SIZE * GRID_SIZE
-    #     ]
-    #     return candidates
 
 
 seed_nodes_selection = [
@@ -716,72 +703,91 @@ trial_maker_baseline = GridBaselineTrialMaker(
     trials_per_node=1,
 )
 
+def get_prolific_settings(experiment_duration):
+    with open("qualification_prolific_en.json", "r") as f:
+        qualification = json.dumps(json.load(f))
 
-class PseudonymInputPage(ModularPage):
-    def __init__(self):
-        super().__init__(
-            "pseudo",
-            Prompt(
-                "Please select an anonymous pseudonym to discover your performance once the experiment is over. Leave empty if you do not want to.",
-            ),
-            control=TextControl(
-                block_copy_paste=False,
-                bot_response=''.join(
-                    random.choices([str(i) for i in range(10)], k=12),
-                ),
-            ),
-            time_estimate=10,
-        )
+    return {
+        "recruiter": "prolific",
+        "base_payment": 0,
+        "prolific_estimated_completion_minutes": DURATION_ESTIMATE / 60,
+        "prolific_recruitment_config": qualification,
+        "auto_recruit": False,
+        "wage_per_hour": 10,
+        "currency": "$",
+        "show_reward": False,
+    }
 
-    def format_answer(self, raw_answer, **kwargs):
-        pseudonyms = Response.query.filter_by(
-            question="pseudo",
-        ).all()
+def get_cap_settings(experiment_duration):
+    raise {"wage_per_hour": 9}
 
-        pseudonyms = [pseudo.answer for pseudo in pseudonyms]
-        print(pseudonyms)
 
-        if raw_answer == "" or raw_answer not in pseudonyms:
-            return raw_answer
-        else:
-            return "INVALID_RESPONSE"
-
-    def validate(self, response, **kwargs):
-        if response.answer == "INVALID_RESPONSE":
-            return FailedValidation("This pseudonym was already used!")
-
-        return None
+recruiter_settings = None
+if RECRUITER == "prolific":
+    recruiter_settings = get_prolific_settings(DURATION_ESTIMATE)
+elif RECRUITER == "cap-recruiter":
+    recruiter_settings = get_cap_settings(DURATION_ESTIMATE)
 
 
 class Exp(psynet.experiment.Experiment):
-    label = "Grid pattern transmission game"
-    test_n_bots = 96
+    label = "Grid creation and selection"
+    test_n_bots = 64
+    test_mode = "serial"
+
+    config = {
+        "recruiter": RECRUITER,
+        "wage_per_hour": 0,
+        "auto_recruit": False,
+        "show_reward": False,
+        "initial_recruitment_size": 3,
+    }
+
+    if RECRUITER != "hotair":
+        config.update(**recruiter_settings)
 
     timeline = Timeline(
-        VoluntaryWithNoCompensationConsent(),
+        MainConsent(),
         InfoPage(
             Markup(
                 f"<h3>The game</h3>"
                 f"<p>You will play this game sometimes in <i>creation mode</i>, and maybe sometimes in <i>selection</i> mode.</p>"
                 f"<h4>Creation mode</h4>"
-                f"<p>In this mode, you will see a grid pattern, and you will have to reproduce it from memory (it is not expected that you can remember all of it, but try your best). </p>"
-                f"<p>Another participant, who has <i>never</i> seen the original, will compare your grid to other proposals, and choose which is most likely correct. Your goal is to have your proposal selected as many times as possible!</p>"
-                f"<p>Often, your grid will be pre-filled based on the last selected proposal.</p>"
+                f"<p>In this mode, you will see a grid pattern for 10 seconds, and you will have to reproduce it from memory (it is not expected that you can remember all of it!). </p>"
+                f"<p>Another participant, who has <i>never</i> seen the original, will compare your grid to other proposals, and choose which is most likely correct. <b>Your goal is to have your proposal selected as many times as possible!</b></p>"
                 f"<div style='display: flex'>"
                 f"<div style='display: block; border: 1px solid black; margin: 2px'><img style='display: block;' src='/static/images/create1.png' width='260px' /></div>"
                 f"<div style='display: block; border: 1px solid black; margin: 2px'><img style='display: block;' src='/static/images/create2.png' width='235px' /></div>"
-                f"</div>"
-                f"<h4>Selection mode</h4>"
-                f"<p>In this mode, you will see several attempts to reproduce a grid, and you will have to guess which is the most accurate.</p>"
-                f"<p>In this mode, you will <b>never</b> see the original!</p>"
-                f"<div style='display: flex'>"
-                f"<img style='display: block; border: 1px solid black; margin: 2px' width='342px' src='/static/images/select.png' />"
                 f"</div>",
             ),
             time_estimate=45,
         ),
-        PseudonymInputPage(),
-        trial_maker_selection,
-        trial_maker_baseline,
+        InfoPage(
+            Markup(
+                "<h4>Creation mode</h4>"
+                f"<p>Often, your grid will be pre-filled based on the last selected proposal.</p>"
+                f"<div style='display: flex'>"
+                f"<div style='display: block; border: 1px solid black; margin: 2px'><img style='display: block;' src='/static/images/create3.png' width='260px' /></div>"
+                f"<div style='display: block; border: 1px solid black; margin: 2px'><img style='display: block;' src='/static/images/create4.png' width='235px' /></div>"
+                f"</div>",
+            ),
+            time_estimate=30,
+        ),
+        InfoPage(
+            Markup(
+                f"<h4>Selection mode</h4>"
+                f"<p>In this mode, you will see several attempts to reproduce a grid, and you will have to guess which is the most accurate.</p>"
+                f"<p>In this mode, you will <b>never</b> see the original! Use your best judgment to decide which attempt is closer to the truth.</p>"
+                f"<div style='display: flex'>"
+                f"<img style='display: block; border: 1px solid black; margin: 2px' width='342px' src='/static/images/select.png' />"
+                f"</div>",
+            ),
+            time_estimate=30,
+        ),
+        InfoPage(
+            "Please click 'next' when you are ready to start the experiment!",
+            time_estimate=10
+        ),
+        # PseudonymInputPage(),
+        trial_maker_selection if CONDITION == "gap" else trial_maker_baseline,
         SuccessfulEndPage(),
     )
