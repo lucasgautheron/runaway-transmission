@@ -49,7 +49,8 @@ N_RATERS = 1
 N_GRIDS = 20
 N_GENERATIONS = 16
 RECRUITER = "hotair"
-DURATION_ESTIMATE = 120 + N_TRIALS_PER_PARTICIPANT*(VIEW_GRID_TIME+30)
+DURATION_ESTIMATE = 120 + N_TRIALS_PER_PARTICIPANT * (VIEW_GRID_TIME + 30)
+
 
 # assert N_TRIALS_PER_PARTICIPANT % (N_CREATORS_PER_GENERATION + 1) == 0
 
@@ -279,7 +280,7 @@ class GridReproductionControl(Control):
 
         # pick elements to add
         if len(missing):
-            n_add = np.random.poisson(5)
+            n_add = 1 + np.random.poisson(2)
             add = random.choices(missing, k=np.minimum(n_add, len(missing)))
 
             error_rate = 0.33
@@ -571,7 +572,7 @@ class GridSelectTrial(SelectTrialMixin, ImitationChainTrial):
                 Markup(
                     "<h3>Choose the most accurate <i>(selection mode)</i></h3>"
                     f"<p>{N_CREATORS_PER_GENERATION} participants have attempted to reproduce a grid from memory.</p>"
-                    "<p>Without having seen the original grid, try and choose the proposal you believe to be its most accurate reproduction.</p>"
+                    "<p>Without having seen the original grid, try and choose the proposal you believe to be closer to the original.</p>"
                     "<div style='display: flex; justify-content: center; gap: 20px; flex-wrap: wrap; margin: 20px 0;'>"
                     + "\n".join(
                         [
@@ -703,6 +704,7 @@ trial_maker_baseline = GridBaselineTrialMaker(
     trials_per_node=1,
 )
 
+
 def get_prolific_settings(experiment_duration):
     with open("qualification_prolific_en.json", "r") as f:
         qualification = json.dumps(json.load(f))
@@ -717,6 +719,7 @@ def get_prolific_settings(experiment_duration):
         "currency": "$",
         "show_reward": False,
     }
+
 
 def get_cap_settings(experiment_duration):
     raise {"wage_per_hour": 9}
@@ -750,10 +753,10 @@ class Exp(psynet.experiment.Experiment):
         InfoPage(
             Markup(
                 f"<h3>The game</h3>"
-                f"<p>You will play this game sometimes in <i>creation mode</i>, and maybe sometimes in <i>selection</i> mode.</p>"
+                f"<p>This game has two modes: <i>creation mode</i> and <i>selection mode</i>.</p>"
                 f"<h4>Creation mode</h4>"
                 f"<p>In this mode, you will see a grid pattern for 10 seconds, and you will have to reproduce it from memory (it is not expected that you can remember all of it!). </p>"
-                f"<p>Another participant, who has <i>never</i> seen the original, will compare your grid to other proposals, and choose which is most likely correct. <b>Your goal is to have your proposal selected as many times as possible!</b></p>"
+                f"<p>Another participant, who has <i>never</i> seen the original, will compare your grid to other proposals, and guess which is most likely correct. <b>Your goal is to have your proposal selected as many times as possible!</b></p>"
                 f"<div style='display: flex'>"
                 f"<div style='display: block; border: 1px solid black; margin: 2px'><img style='display: block;' src='/static/images/create1.png' width='260px' /></div>"
                 f"<div style='display: block; border: 1px solid black; margin: 2px'><img style='display: block;' src='/static/images/create2.png' width='235px' /></div>"
@@ -772,20 +775,28 @@ class Exp(psynet.experiment.Experiment):
             ),
             time_estimate=30,
         ),
-        InfoPage(
-            Markup(
-                f"<h4>Selection mode</h4>"
+        ModularPage(
+            label="mock",
+            prompt=Markup(
+                f"<h4>Selection mode (less frequent)</h4>"
                 f"<p>In this mode, you will see several attempts to reproduce a grid, and you will have to guess which is the most accurate.</p>"
                 f"<p>In this mode, you will <b>never</b> see the original! Use your best judgment to decide which attempt is closer to the truth.</p>"
                 f"<div style='display: flex'>"
                 f"<img style='display: block; border: 1px solid black; margin: 2px' width='342px' src='/static/images/select.png' />"
-                f"</div>",
+                f"</div>"
+                f"<div style='margin: 0 auto; text-align: center;'>Which version you would pick, in this example?</div>",
+            ),
+            control=PushButtonControl(
+                choices=[0, 1, 2],
+                labels=[f"Version {i + 1}" for i in range(3)],
+                arrange_vertically=False,
+                bot_response=lambda: "",
             ),
             time_estimate=30,
         ),
         InfoPage(
-            "Please click 'next' when you are ready to start the experiment!",
-            time_estimate=10
+            "Your training is complete. Please click 'next' when you are ready to start the experiment!",
+            time_estimate=10,
         ),
         # PseudonymInputPage(),
         trial_maker_selection if CONDITION == "gap" else trial_maker_baseline,
