@@ -3,6 +3,7 @@
     <div class="grid-container-wrapper">
         <div class="grid-section">
             <strong>Click cells to toggle between black and white:</strong>
+            <div id="edit-info" class="edit-info"></div>
             <div id="grid-interface" class="grid-interface"></div>
         </div>
     </div>
@@ -10,16 +11,19 @@
 
 <script>
     class GridReproductionInterface {
-        constructor(gridSize) {
+        constructor(gridSize, maxEdits) {
             this.gridSize = gridSize;
             this.gridData = [];
+            this.initialGrid = [];
+            this.diffCount = 0; // Hamming distance from initialGrid
+            this.maxEdits = (maxEdits === null || maxEdits === undefined) ? Infinity : Number(maxEdits);
             this.startTime = Date.now();
 
             this.initializeGrid();
             this.bindEvents();
             this.updateDisplay();
 
-            // Check for prefilled data from bot_response
+            // Load prefilled data from config and snapshot as initialGrid
             this.loadPrefillData();
         }
 
@@ -69,15 +73,57 @@
             // Check if there's prefill data from config
             const prefillGrid = {{ config.prefill_grid | tojson | safe }};
 
-            // Set grid data from prefill
             if (Array.isArray(prefillGrid) && prefillGrid.length === this.gridSize) {
                 this.setGridData(prefillGrid);
+            } else {
+                // If no prefill provided, treat the all-white grid as the initial reference
+                this.snapshotInitialGrid();
             }
         }
 
+        snapshotInitialGrid() {
+            this.initialGrid = this.gridData.map(row => [...row]); // deep copy
+            this.diffCount = this.computeDiffCount(this.gridData, this.initialGrid);
+            this.updateDisplay();
+        }
+
+        computeDiffCount(a, b) {
+            let d = 0;
+            for (let r = 0; r < this.gridSize; r++) {
+                for (let c = 0; c < this.gridSize; c++) {
+                    if (a[r][c] !== b[r][c]) d++;
+                }
+            }
+            return d;
+        }
+
         toggleCell(row, col) {
-            // Toggle cell state
-            this.gridData[row][col] = this.gridData[row][col] === 0 ? 1 : 0;
+            const current = this.gridData[row][col];
+            const toggled = current === 0 ? 1 : 0;
+            const initVal = this.initialGrid[row][col];
+
+            // Determine how this toggle changes the Hamming distance
+            let delta = 0;
+            if (current === initVal && toggled !== initVal) {
+                // moving away from initial => increases distance
+                delta = +1;
+            } else if (current !== initVal && toggled === initVal) {
+                // moving back toward initial => decreases distance
+                delta = -1;
+            } else {
+                // flipping between two states both different from initial OR both same (edge cases)
+                delta = 0;
+            }
+
+            // Enforce cap: allow decreases or neutral changes always; forbid increases beyond max
+            if (delta > 0 && (this.diffCount + delta) > this.maxEdits) {
+                this.flashLimit(row, col);
+                return;
+            }
+
+            // Apply toggle
+            this.gridData[row][col] = toggled;
+            this.diffCount += delta;
 
             // Update visual representation
             const cellIndex = row * this.gridSize + col;
@@ -90,11 +136,29 @@
                 cell.classList.remove('black');
                 cell.classList.add('white');
             }
+
+            this.updateDisplay();
+        }
+
+        flashLimit(row, col) {
+            // Brief visual cue when hitting the edit cap
+            const idx = row * this.gridSize + col;
+            const cell = this.cells[idx];
+            cell.classList.add('hit-limit');
+            setTimeout(() => cell.classList.remove('hit-limit'), 200);
         }
 
         updateDisplay() {
-            // Update any additional display elements if needed
-            // Currently handled by individual cell updates
+            const infoEl = document.getElementById('edit-info');
+            if (!infoEl) return;
+
+            if (this.maxEdits === Infinity) {
+                infoEl.textContent = '';
+                return;
+            }
+
+            const remaining = Math.max(0, this.maxEdits - this.diffCount);
+            infoEl.textContent = `Edits remaining: ${remaining} / ${this.maxEdits}`;
         }
 
         getResponseData() {
@@ -120,6 +184,9 @@
                         }
                     }
                 }
+
+                // After setting grid data, snapshot as the initial reference and reset diff
+                this.snapshotInitialGrid();
             }
         }
     }
@@ -127,7 +194,9 @@
     // Initialize when DOM is ready
     document.addEventListener('DOMContentLoaded', function () {
         const gridSize = {{ config.grid_size }};
-        window.gridInterface = new GridReproductionInterface(gridSize);
+        const numEdits = {{ config.num_edits }};
+        console.log(numEdits);
+        window.gridInterface = new GridReproductionInterface(gridSize, numEdits);
 
         // PsyNet response staging
         psynet.stageResponse = function () {
@@ -159,6 +228,12 @@
         margin: 10px 0;
     }
 
+    .edit-info {
+        margin-top: 6px;
+        font-size: 14px;
+        color: #333;
+    }
+
     .grid {
         display: inline-block;
     }
@@ -167,7 +242,7 @@
         width: 24px;
         height: 24px;
         cursor: pointer;
-        transition: opacity 0.1s ease, transform 0.1s ease;
+        transition: opacity 0.1s ease, transform 0.1s ease, box-shadow 0.2s ease;
         border: none;
     }
 
@@ -182,6 +257,11 @@
 
     .grid-cell.white {
         background-color: #fff;
+    }
+
+    /* Brief red outline when hitting edit cap */
+    .grid-cell.hit-limit {
+        box-shadow: 0 0 0 2px #dc3545 inset;
     }
 
     /* Responsive design */

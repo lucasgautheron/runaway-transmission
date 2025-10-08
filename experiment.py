@@ -9,6 +9,7 @@ from psynet.modular_page import (
 from psynet.page import InfoPage, SuccessfulEndPage
 from psynet.timeline import FailedValidation, Timeline, Response, Event
 
+from psynet.trial.main import Trial
 from psynet.trial.create_and_rate import (
     CreateAndRateNodeMixin,
     CreateAndRateTrialMakerMixin,
@@ -32,38 +33,30 @@ logger = get_logger()
 GRID_SIZE = 16
 GRID_FILL = 48
 MAX_ACCURACY = GRID_SIZE * GRID_SIZE
-VIEW_GRID_TIME = 10
-CREATOR_FEEDBACK = False  # tell creators how well they've done after each trial
-CONDITION = "gap"
+NUM_EDITS = 5
+CREATOR_FEEDBACK = False
 
-assert CONDITION in ["gap", "baseline"]
-
-# N_TRIALS_PER_PARTICIPANT = 16
-# N_CREATORS_PER_GENERATION = 3
-# N_RATERS = 1
-# N_GRIDS = 16
-# N_GENERATIONS = 16
-N_TRIALS_PER_PARTICIPANT = 20
+N_TRIALS_PER_PARTICIPANT = 2
 N_CREATORS_PER_GENERATION = 3
 N_RATERS = 1
-N_GRIDS = 20
-N_GENERATIONS = 16
+N_GRIDS = 2
+N_GENERATIONS = 20
 RECRUITER = "hotair"
-DURATION_ESTIMATE = 120 + N_TRIALS_PER_PARTICIPANT * (VIEW_GRID_TIME + 30)
+DURATION_ESTIMATE = 120 + N_TRIALS_PER_PARTICIPANT * 30
 
 
 # assert N_TRIALS_PER_PARTICIPANT % (N_CREATORS_PER_GENERATION + 1) == 0
 
 
 # Utility function for grid HTML generation
-def grid_to_html(grid_data: List[List[int]], cell_size="20px"):
+def grid_to_html(grid_data: List[List[int]], cell_size="20px", border_size="1px"):
     """Generate HTML representation of grid without creating a node"""
     html = f'<div style="display: inline-block; border: 1px solid #333;">'
     for row in grid_data:
         html += '<div style="display: flex; line-height: 0;">'
         for cell in row:
             color = "#000" if cell == 1 else "#fff"
-            html += f'<div style="background-color: {color}; width: {cell_size}; height: {cell_size}; border: 1px solid #ccc;"></div>'
+            html += f'<div style="background-color: {color}; width: {cell_size}; height: {cell_size}; border: {border_size} solid #ccc;"></div>'
         html += '</div>'
     html += '</div>'
     return html
@@ -155,83 +148,53 @@ class GridNode(ArtefactNode):
             all(cell in [0, 1] for cell in row) for row in grid_data
         ), "All cells must be 0 (white) or 1 (black)"
 
-    def _is_simple_imitation_chain(self):
-        """Check if this node belongs to the simple imitation chain trial maker"""
-        return hasattr(
-            self, 'trial_maker',
-        ) and self.trial_maker.id == "grid_imitation_chain_trial_maker"
-
     def summarize_trials(self, trials, experiment, participant):
         """Summarize trials - behavior depends on trial maker type"""
 
-        if self._is_simple_imitation_chain():
-            # Simple imitation chain: just use the trial answer directly
-            logger.info(
-                f"GridNode.summarize_trials: Simple imitation chain mode",
-            )
-            logger.info(
-                f"Trial answer: {trials[0].answer} (type: {type(trials[0].answer)})",
-            )
+        # Create-and-rate mode: use selection logic
+        logger.info(f"GridNode.summarize_trials: Create-and-rate mode")
+        trial_maker = self.trial_maker
 
-            # Validate the trial answer
-            trial_answer = trials[0].answer
-            if not isinstance(trial_answer, list):
-                raise ValueError(
-                    f"Expected grid data (list), got {type(trial_answer)}: {trial_answer}",
-                )
+        # Get all rate trials for this node, for the last generation
+        all_rate_trials = trial_maker.rater_class.query.filter_by(
+            node_id=self.id, failed=False, finalized=True,
+        ).all()
 
-            definition = self.seed.copy()
-            definition["generation"] += 1
-            definition["last_choice"] = trial_answer
-            definition["accuracy"] = trials[0].var.accuracy
+        last_generation = max(
+            [trial.definition["generation"] for trial in all_rate_trials],
+        )
+        all_rate_trials = [trial for trial in all_rate_trials if
+                           trial.definition[
+                               "generation"] == last_generation]
 
-            return definition
+        assert len(all_rate_trials) == N_RATERS
 
-        else:
-            # Create-and-rate mode: use selection logic
-            logger.info(f"GridNode.summarize_trials: Create-and-rate mode")
-            trial_maker = self.trial_maker
+        # Get all targets of the rate trials
+        all_targets = all_rate_trials[0].get_all_targets()
+        count_dict = {i: 0 for i in range(len(all_targets))}
 
-            # Get all rate trials for this node, for the last generation
-            all_rate_trials = trial_maker.rater_class.query.filter_by(
-                node_id=self.id, failed=False, finalized=True,
-            ).all()
+        # For each rate trial, keep track of the selected target
+        for trial in all_rate_trials:
+            if not isinstance(trial, SelectTrialMixin):
+                continue
 
-            last_generation = max(
-                [trial.definition["generation"] for trial in all_rate_trials],
-            )
-            all_rate_trials = [trial for trial in all_rate_trials if
-                               trial.definition[
-                                   "generation"] == last_generation]
+            # Find which target matches this trial's answer
+            for i, target in enumerate(all_targets):
+                if trial.answer == str(target):
+                    count_dict[i] += 1
+                    break
 
-            assert len(all_rate_trials) == N_RATERS
+        # Get the index of the target with highest count
+        winning_index = max(count_dict, key=count_dict.get)
+        last_choice = all_targets[winning_index].answer
 
-            # Get all targets of the rate trials
-            all_targets = all_rate_trials[0].get_all_targets()
-            count_dict = {i: 0 for i in range(len(all_targets))}
+        # Seed for next generation
+        definition = self.seed.copy()
+        definition["generation"] += 1
+        definition["last_choice"] = last_choice
+        definition["accuracy"] = all_targets[winning_index].var.accuracy
 
-            # For each rate trial, keep track of the selected target
-            for trial in all_rate_trials:
-                if not isinstance(trial, SelectTrialMixin):
-                    continue
-
-                # Find which target matches this trial's answer
-                for i, target in enumerate(all_targets):
-                    if trial.answer == str(target):
-                        count_dict[i] += 1
-                        break
-
-            # Get the index of the target with highest count
-            winning_index = max(count_dict, key=count_dict.get)
-            last_choice = all_targets[winning_index].answer
-
-            # Seed for next generation
-            definition = self.seed.copy()
-            definition["generation"] += 1
-            definition["last_choice"] = last_choice
-            definition["accuracy"] = all_targets[winning_index].var.accuracy
-
-            return definition
+        return definition
 
     @classmethod
     def accuracy(cls, truth, attempt):
@@ -248,11 +211,13 @@ class GridReproductionControl(Control):
     external_template = "grid-reproduction.html"
 
     def __init__(
-            self, grid_size=10, prefill_grid=None, truth=List[List[int]],
+            self, grid_size=10, prefill_grid=None, num_edits: int = NUM_EDITS,
+            truth=List[List[int]],
             **kwargs,
     ):
         self.grid_size = grid_size
         self.prefill_grid = prefill_grid
+        self.num_edits = num_edits
         self.truth = np.array(truth)
         super().__init__(**kwargs, bot_response=self.bot_response())
 
@@ -307,6 +272,7 @@ class GridReproductionControl(Control):
         return {
             "grid_size": self.grid_size,
             "prefill_grid": self.prefill_grid,
+            "num_edits": self.num_edits,
         }
 
 
@@ -322,16 +288,21 @@ class GridInputPage(ModularPage):
             control=GridReproductionControl(
                 grid_size=grid_size,
                 prefill_grid=prefill_grid,
+                num_edits=NUM_EDITS,
                 truth=truth,
             ),
             time_estimate=time_estimate,
         )
+        self.prefill_grid = prefill_grid
+        self.num_edits = NUM_EDITS
+        logger.info(self.prefill_grid)
 
     def format_answer(self, raw_answer, **kwargs):
         if not isinstance(raw_answer, list):
             return "INVALID_RESPONSE"
 
         grid_data = raw_answer
+
         return self._validate_grid(grid_data)
 
     def _validate_grid(self, grid_data):
@@ -352,12 +323,21 @@ class GridInputPage(ModularPage):
 
     def validate(self, response, **kwargs):
         if response.answer == "INVALID_RESPONSE":
-            return FailedValidation("Please enter a response.")
+            return FailedValidation("Please enter a valid response.")
         if not isinstance(response.answer, list):
             return FailedValidation("Invalid response format.")
+
         grid_data = response.answer
         if len(grid_data) == 0:
             return FailedValidation("Please create a grid pattern.")
+
+        if np.sum(
+                np.abs(np.array(grid_data) - np.array(self.prefill_grid)),
+        ) > self.num_edits:
+            return FailedValidation(
+                f"Please make fewer than {self.num_edits + 1} edits.",
+            )
+
         return None
 
 
@@ -366,43 +346,13 @@ class GridDisplayPage(InfoPage):
         super().__init__(
             *args,
             **kwargs,
-            time_estimate=VIEW_GRID_TIME,
-            events={
-                "responseEnable": Event(
-                    is_triggered_by="trialStart",
-                    delay=VIEW_GRID_TIME,
-                    js="onNextButton();",
-                ),
-                "startProgressTimer": Event(
-                    is_triggered_by="trialStart",
-                    delay=0,
-                    js=f"var totalTime = {VIEW_GRID_TIME};"
-                       + """
-                    var timeLeft = totalTime;
-                    var progressBar = document.getElementById('progress-bar');
-                    var timeText = document.getElementById('time-text');
-                    
-                    var timer = setInterval(function() {
-                        timeLeft--;
-                        var percentage = (timeLeft / totalTime) * 100;
-                        progressBar.style.width = percentage + '%';
-                        timeText.textContent = timeLeft + ' seconds remaining';
-                        
-                        if (timeLeft <= 0) {
-                            clearInterval(timer);
-                            timeText.textContent = 'Time up!';
-                            progressBar.style.width = '0%';
-                        }
-                    }, 1000);
-                    """,
-                ),
-            },
+            time_estimate=10,
         )
 
 
 class GridCreateTrial(CreateTrialMixin, ImitationChainTrial):
     """Trial class specifically for grid creation tasks"""
-    time_estimate = 30 + VIEW_GRID_TIME + 1
+    time_estimate = 30 + 1
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -410,42 +360,67 @@ class GridCreateTrial(CreateTrialMixin, ImitationChainTrial):
 
     def first_trial(self):
         """First trial - show original grid only with greenish background"""
-        return GridDisplayPage(
-            Markup(
-                f"<h3>Memorize the grid! <i>(creation mode)</i></h3>"
-                f"<p>Please study and memorize this grid pattern as much as you can.</p>"
-                f"<p>On the next page, you will have to reproduce it from memory.</p>"
-                f"<div>"
-                f"<div id='progress-bar' style='height: 20px; background: linear-gradient(90deg, #dc3545, #ffc107, #28a745); border-radius: 7px; width: 100%; transition: width 0.1s;'></div>"
-                f"<div id='time-text' style='text-align: center; margin-top: 5px; font-weight: bold;'>{VIEW_GRID_TIME} seconds remaining</div>"
-                f"</div>"
-                f"<div style='display: flex; justify-content: center; margin: 20px 0;'>"
-                f"<div style='padding: 5px 10px 10px 10px; margin: 10px; text-align: center; background: #e8f5e8; border-radius: 5px; border-left: 4px solid #4CAF50;'>"
-                f"<strong>Original pattern:</strong><br>{grid_to_html(self.context['original'])}"
-                f"</div>"
-                f"</div>",
-            ),
+        return InfoPage(
+            "You will be asked to create a new grid from scratch.",
+            time_estimate=10,
         )
 
     def other_trial(self):
-        generation = self.definition["generation"]
+
+        prior_proposals = self.query.filter_by(
+            network_id=self.network_id, failed=False, finalized=True
+        ).all()
+
+        proposals = dict()
+        trial_maker = None
+        for proposal in prior_proposals:
+            generation = proposal.node.definition["generation"]
+            proposals[generation] = proposals.get(generation, []) + [
+                proposal,
+            ]
+            trial_maker = proposal.trial_maker
+
+        selections = trial_maker.rater_class.query.filter_by(
+            network_id=self.network_id, failed=False, finalized=True
+        ).all()
+        winners = []
+        for selection in selections:
+            winners.append(selection.answer)
+
+        logger.info(proposals)
+
+        active_generation = self.definition["generation"]
+
+        html = "<div style='display: flex; flex-direction: row; justify-content: center; align-items: flex-start; gap: 10px;'>"
+        for generation in sorted(proposals.keys()):
+            if generation >= active_generation:
+                continue
+
+            # Each generation column
+            html += "<div style='display: flex; flex-direction: column; align-items: center; gap: 5px;'>"
+
+            # Generation label
+            html += f"<div style='margin-bottom: 2px;'>Step {generation}</div>"
+
+            # Proposals within this generation
+            for proposal in proposals[generation]:
+                if str(proposal) in winners:
+                    html += f"<div style='border: 2px solid green;'>{grid_to_html(proposal.answer, cell_size='5px', border_size='0px')}</div>"
+                else:
+                    html += f"<div>{grid_to_html(proposal.answer, cell_size='5px', border_size='0px')}</div>"
+
+            html += "</div>"
+
+        html += "</div>"
+
+        print(html)
+
         return GridDisplayPage(
             Markup(
-                f"<h3>Memorize the grid! <i>(creation mode)</i></h3>"
-                f"<p>Please study and memorize this grid pattern as much as you can.</p>"
-                f"<p>On the next page, you will have to reproduce it from memory.</p>"
-                f"<div>"
-                f"<div id='progress-bar' style='height: 20px; background: linear-gradient(90deg, #dc3545, #ffc107, #28a745); border-radius: 7px; width: 100%; transition: width 0.1s;'></div>"
-                f"<div id='time-text' style='text-align: center; margin-top: 5px; font-weight: bold;'>{VIEW_GRID_TIME} seconds remaining</div>"
-                f"</div>"
-                f"<div style='display: flex; justify-content: center; gap: 20px; margin: 20px 0; flex-wrap: wrap;'>"
-                f"<div style='padding: 5px 10px 10px 10px; text-align: center; background: #e8f5e8; border-radius: 5px; border-left: 4px solid #4CAF50;'>"
-                f"<strong>Original pattern:</strong><br>{grid_to_html(self.context['original'])}"
-                f"</div>"
-                f"<div style='padding: 5px 10px 10px 10px; text-align: center; background: #fff3cd; border-radius: 5px; border-left: 4px solid #ffc107;'>"
-                f"<strong>Starting point:</strong><br>{grid_to_html(self.definition['last_choice'])}"
-                f"</div>"
-                f"</div>",
+                f"<h3>Observe previous patterns <i>(creation mode)</i></h3>"
+                f"<p>Below, you may observe prior proposals and the winner at each iteration.</p>"
+                f"<p>On the next page, you will start from the latest winner and make up to five edits.</p>"
+                f"{html}"
             ),
         )
 
@@ -466,18 +441,18 @@ class GridCreateTrial(CreateTrialMixin, ImitationChainTrial):
 
         # For generation 0, start from scratch (no prefill); for generation > 0, start with last_choice
         if generation == 0:
-            prefill_grid = None  # No prefill for first generation
+            prefill_grid = np.zeros(
+                (GRID_SIZE, GRID_SIZE),
+            ).tolist()  # Empty for first generation
         else:
             prefill_grid = self.definition['last_choice']
 
         text = Markup(
-            f"<h3>Now, reproduce the grid! <i>(creation mode)</i></h3>"
-            f"<p>Please reproduce the grid you just saw.</p>"
-            f"<p>Next, another participant <b>who has not seen the original</b> will compare your grid to other proposals, and choose which is most likely correct. Can you convince them that your proposal is the most accurate?</p>",
+            f"<h3>Make a proposal <i>(creation mode)</i></h3>"
+            f"<p>Please add up to {NUM_EDITS} squares to the grid. You will receive a reward if your proposal is selected.</p>",
         ) if generation == 0 else Markup(
-            f"<h3>Now, reproduce the grid! <i>(creation mode)</i></h3>"
-            f"<p>Please reproduce the grid you just saw. You are starting from the grid that was chosen last</p>"
-            f"<p>Next, another participant <b>who has not seen the original</b> will compare your grid to other proposals, and choose which is most likely correct. Can you convince them that your proposal is the most accurate?</p>",
+            f"<h3>Edit the latest proposal <i>(creation mode)</i></h3>"
+            f"<p>You are free to make up to {NUM_EDITS} modifications. You will receive a reward if your proposal is selected.</p>",
         )
 
         return GridInputPage(
@@ -558,6 +533,10 @@ class GridSelectTrial(SelectTrialMixin, ImitationChainTrial):
 
     def show_trial(self, experiment, participant):
         artefacts = self.get_all_targets()
+        logger.info(artefacts)
+
+        for artefact in artefacts:
+            logger.info(artefact.id)
 
         assert len(
             {artefact.node_id for artefact in artefacts},
@@ -629,29 +608,10 @@ class GridTrialMaker(CreateAndRateTrialMakerMixin, ImitationChainTrialMaker):
         return grown
 
 
-class GridBaselineTrialMaker(ImitationChainTrialMaker):
-    def grow_network(self, network, experiment):
-        grown = super().grow_network(network, experiment)
-
-        if network.head.definition["accuracy"] >= MAX_ACCURACY:
-            network.full = True
-
-        return grown
-
-
 seed_nodes_selection = [
     GridNode(size=GRID_SIZE, n_fill=GRID_FILL, random=True)
     for _ in range(N_GRIDS)
 ]
-seed_nodes_baseline = [
-    GridNode(
-        grid_data=seed_nodes_selection[_].context["original"],
-        size=GRID_SIZE,
-        n_fill=GRID_FILL,
-    )
-    for _ in range(N_GRIDS)
-]
-
 # Experiment setup
 trial_maker_selection = GridTrialMaker(
     start_nodes=seed_nodes_selection,
@@ -678,30 +638,6 @@ trial_maker_selection = GridTrialMaker(
     wait_for_networks=False,
     max_nodes_per_chain=N_GENERATIONS,
     allow_revisiting_networks_in_across_chains=False,
-)
-
-# Create the simple imitation chain trial maker instance
-trial_maker_baseline = GridBaselineTrialMaker(
-    start_nodes=seed_nodes_baseline,
-    node_class=GridNode,
-    trial_class=GridCreateTrial,  # Use the new imitation trial class
-    chains_per_experiment=N_GRIDS,
-    expected_trials_per_participant=N_TRIALS_PER_PARTICIPANT / (
-            N_CREATORS_PER_GENERATION + 1),
-    max_trials_per_participant=N_TRIALS_PER_PARTICIPANT / (
-            N_CREATORS_PER_GENERATION + 1),
-    max_nodes_per_chain=N_GENERATIONS,
-    balance_across_chains=False,
-    check_performance_at_end=True,
-    check_performance_every_trial=False,
-    propagate_failure=False,
-    recruit_mode="n_trials",
-    target_n_participants=None,
-    wait_for_networks=False,
-    allow_revisiting_networks_in_across_chains=False,
-    id_="grid_imitation_chain_trial_maker",
-    chain_type="across",
-    trials_per_node=1,
 )
 
 
@@ -750,55 +686,55 @@ class Exp(psynet.experiment.Experiment):
 
     timeline = Timeline(
         MainConsent(),
-        InfoPage(
-            Markup(
-                f"<h3>The game</h3>"
-                f"<p>This game has two modes: <i>creation mode</i> and <i>selection mode</i>.</p>"
-                f"<h4>Creation mode</h4>"
-                f"<p>In this mode, you will see a grid pattern for 10 seconds, and you will have to reproduce it from memory (it is not expected that you can remember all of it!). </p>"
-                f"<p>Another participant, who has <i>never</i> seen the original, will compare your grid to other proposals, and guess which is most likely correct. <b>Your goal is to have your proposal selected as many times as possible!</b></p>"
-                f"<div style='display: flex'>"
-                f"<div style='display: block; border: 1px solid black; margin: 2px'><img style='display: block;' src='/static/images/create1.png' width='260px' /></div>"
-                f"<div style='display: block; border: 1px solid black; margin: 2px'><img style='display: block;' src='/static/images/create2.png' width='235px' /></div>"
-                f"</div>",
-            ),
-            time_estimate=45,
-        ),
-        InfoPage(
-            Markup(
-                "<h4>Creation mode</h4>"
-                f"<p>Often, your grid will be pre-filled based on the last selected proposal.</p>"
-                f"<div style='display: flex'>"
-                f"<div style='display: block; border: 1px solid black; margin: 2px'><img style='display: block;' src='/static/images/create3.png' width='260px' /></div>"
-                f"<div style='display: block; border: 1px solid black; margin: 2px'><img style='display: block;' src='/static/images/create4.png' width='235px' /></div>"
-                f"</div>",
-            ),
-            time_estimate=30,
-        ),
-        ModularPage(
-            label="mock",
-            prompt=Markup(
-                f"<h4>Selection mode (less frequent)</h4>"
-                f"<p>In this mode, you will see several attempts to reproduce a grid, and you will have to guess which is the most accurate.</p>"
-                f"<p>In this mode, you will <b>never</b> see the original! Use your best judgment to decide which attempt is closer to the truth.</p>"
-                f"<div style='display: flex'>"
-                f"<img style='display: block; border: 1px solid black; margin: 2px' width='342px' src='/static/images/select.png' />"
-                f"</div>"
-                f"<div style='margin: 0 auto; text-align: center;'>Which version you would pick, in this example?</div>",
-            ),
-            control=PushButtonControl(
-                choices=[0, 1, 2],
-                labels=[f"Version {i + 1}" for i in range(3)],
-                arrange_vertically=False,
-                bot_response=lambda: "",
-            ),
-            time_estimate=30,
-        ),
-        InfoPage(
-            "Your training is complete. Please click 'next' when you are ready to start the experiment!",
-            time_estimate=10,
-        ),
+        # InfoPage(
+        #     Markup(
+        #         f"<h3>The game</h3>"
+        #         f"<p>This game has two modes: <i>creation mode</i> and <i>selection mode</i>.</p>"
+        #         f"<h4>Creation mode</h4>"
+        #         f"<p>In this mode, you will see a grid pattern for 10 seconds, and you will have to reproduce it from memory (it is not expected that you can remember all of it!). </p>"
+        #         f"<p>Another participant, who has <i>never</i> seen the original, will compare your grid to other proposals, and guess which is most likely correct. <b>Your goal is to have your proposal selected as many times as possible!</b></p>"
+        #         f"<div style='display: flex'>"
+        #         f"<div style='display: block; border: 1px solid black; margin: 2px'><img style='display: block;' src='/static/images/create1.png' width='260px' /></div>"
+        #         f"<div style='display: block; border: 1px solid black; margin: 2px'><img style='display: block;' src='/static/images/create2.png' width='235px' /></div>"
+        #         f"</div>",
+        #     ),
+        #     time_estimate=45,
+        # ),
+        # InfoPage(
+        #     Markup(
+        #         "<h4>Creation mode</h4>"
+        #         f"<p>Often, your grid will be pre-filled based on the last selected proposal.</p>"
+        #         f"<div style='display: flex'>"
+        #         f"<div style='display: block; border: 1px solid black; margin: 2px'><img style='display: block;' src='/static/images/create3.png' width='260px' /></div>"
+        #         f"<div style='display: block; border: 1px solid black; margin: 2px'><img style='display: block;' src='/static/images/create4.png' width='235px' /></div>"
+        #         f"</div>",
+        #     ),
+        #     time_estimate=30,
+        # ),
+        # ModularPage(
+        #     label="mock",
+        #     prompt=Markup(
+        #         f"<h4>Selection mode (less frequent)</h4>"
+        #         f"<p>In this mode, you will see several attempts to reproduce a grid, and you will have to guess which is the most accurate.</p>"
+        #         f"<p>In this mode, you will <b>never</b> see the original! Use your best judgment to decide which attempt is closer to the truth.</p>"
+        #         f"<div style='display: flex'>"
+        #         f"<img style='display: block; border: 1px solid black; margin: 2px' width='342px' src='/static/images/select.png' />"
+        #         f"</div>"
+        #         f"<div style='margin: 0 auto; text-align: center;'>Which version you would pick, in this example?</div>",
+        #     ),
+        #     control=PushButtonControl(
+        #         choices=[0, 1, 2],
+        #         labels=[f"Version {i + 1}" for i in range(3)],
+        #         arrange_vertically=False,
+        #         bot_response=lambda: "",
+        #     ),
+        #     time_estimate=30,
+        # ),
+        # InfoPage(
+        #     "Your training is complete. Please click 'next' when you are ready to start the experiment!",
+        #     time_estimate=10,
+        # ),
         # PseudonymInputPage(),
-        trial_maker_selection if CONDITION == "gap" else trial_maker_baseline,
+        trial_maker_selection,
         SuccessfulEndPage(),
     )
