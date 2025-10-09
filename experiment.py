@@ -7,7 +7,7 @@ from psynet.modular_page import (
     Prompt, ModularPage, PushButtonControl, Control,
 )
 from psynet.page import InfoPage, SuccessfulEndPage
-from psynet.timeline import FailedValidation, Timeline, Response, Event
+from psynet.timeline import FailedValidation, Timeline, PageMaker, join
 
 from psynet.trial.main import Trial
 from psynet.trial.create_and_rate import (
@@ -31,14 +31,13 @@ import json
 logger = get_logger()
 
 GRID_SIZE = 16
-GRID_FILL = 48
+GRID_FILL = int(GRID_SIZE * GRID_SIZE * 0.5)
 MAX_ACCURACY = GRID_SIZE * GRID_SIZE
-NUM_EDITS = 5
-CREATOR_FEEDBACK = False
+NUM_EDITS = 8
 
 N_TRIALS_PER_PARTICIPANT = 2
 N_CREATORS_PER_GENERATION = 3
-N_RATERS = 1
+N_RATERS = 3
 N_GRIDS = 2
 N_GENERATIONS = 20
 RECRUITER = "hotair"
@@ -49,7 +48,9 @@ DURATION_ESTIMATE = 120 + N_TRIALS_PER_PARTICIPANT * 30
 
 
 # Utility function for grid HTML generation
-def grid_to_html(grid_data: List[List[int]], cell_size="20px", border_size="1px"):
+def grid_to_html(
+        grid_data: List[List[int]], cell_size="20px", border_size="1px",
+):
     """Generate HTML representation of grid without creating a node"""
     html = f'<div style="display: inline-block; border: 1px solid #333;">'
     for row in grid_data:
@@ -84,7 +85,7 @@ class ArtefactNode(ChainNode, CreateAndRateNodeMixin):
         )
 
     def create_initial_seed(self, experiment=None, participant=None):
-        return {"generation": 0, "last_choice": "", "accuracy": 0}
+        return {"generation": 0, "last_winner": "", "accuracy": 0, "options": dict()}
 
     def create_definition_from_seed(self, seed, experiment, participant):
         return seed
@@ -108,7 +109,7 @@ class GridNode(ArtefactNode):
         super().__init__(artefact=grid_data, **kwargs)
 
         if self.artefact is None:
-            self.artefact = self.definition["last_choice"]
+            self.artefact = self.definition["last_winner"]
 
         # Validate grid during initialization
         self._validate_grid_format(self.artefact)
@@ -150,7 +151,7 @@ class GridNode(ArtefactNode):
 
     def summarize_trials(self, trials, experiment, participant):
         """Summarize trials - behavior depends on trial maker type"""
-
+        logger.info("Summarizing!!")
         # Create-and-rate mode: use selection logic
         logger.info(f"GridNode.summarize_trials: Create-and-rate mode")
         trial_maker = self.trial_maker
@@ -186,13 +187,20 @@ class GridNode(ArtefactNode):
 
         # Get the index of the target with highest count
         winning_index = max(count_dict, key=count_dict.get)
-        last_choice = all_targets[winning_index].answer
+        last_winner = all_targets[winning_index].answer['edit']
 
         # Seed for next generation
         definition = self.seed.copy()
         definition["generation"] += 1
-        definition["last_choice"] = last_choice
+        definition["last_winner"] = last_winner
+        definition["winner_id"] = all_targets[winning_index].id
+        definition["options"] = {
+            all_targets[i].id: count_dict[i]
+            for i in count_dict.keys()
+        }
         definition["accuracy"] = all_targets[winning_index].var.accuracy
+
+        logger.info(definition)
 
         return definition
 
@@ -212,13 +220,11 @@ class GridReproductionControl(Control):
 
     def __init__(
             self, grid_size=10, prefill_grid=None, num_edits: int = NUM_EDITS,
-            truth=List[List[int]],
             **kwargs,
     ):
         self.grid_size = grid_size
         self.prefill_grid = prefill_grid
         self.num_edits = num_edits
-        self.truth = np.array(truth)
         super().__init__(**kwargs, bot_response=self.bot_response())
 
     def bot_response(self):
@@ -226,44 +232,6 @@ class GridReproductionControl(Control):
             grid = np.array(self.prefill_grid, dtype=int)
         else:
             grid = np.zeros((self.grid_size, self.grid_size), dtype=int)
-
-        x, y = np.nonzero(self.truth & (~grid))
-        missing = [[x[i], y[i]] for i in range(len(x))]
-
-        # pick elements to correct
-        x, y, = np.nonzero((~self.truth) & grid)
-        incorrect = [[x[i], y[i]] for i in range(len(x))]
-
-        if len(incorrect) > 0:
-            n_correct = np.random.poisson(1)
-            to_correct = random.sample(
-                incorrect, k=np.minimum(n_correct, len(incorrect)),
-            )
-
-            for x, y, in to_correct:
-                grid[x, y] = 0
-
-        # pick elements to add
-        if len(missing):
-            n_add = 1 + np.random.poisson(2)
-            add = random.choices(missing, k=np.minimum(n_add, len(missing)))
-
-            error_rate = 0.33
-            for x, y in add:
-                if np.random.uniform(0, 1) < error_rate:
-                    x_possible = [x - 1, x + 1]
-                    y_possible = [y - 1, y + 1]
-                    x_possible = [x for x in x_possible if
-                                  x >= 0 and x < self.grid_size]
-                    y_possible = [y for y in y_possible if
-                                  y >= 0 and y < self.grid_size]
-
-                    x_choice = np.random.choice(x_possible)
-                    y_choice = np.random.choice(y_possible)
-
-                    grid[x_choice, y_choice] = 1
-                else:
-                    grid[x, y] = 1
 
         return grid.tolist()
 
@@ -279,7 +247,7 @@ class GridReproductionControl(Control):
 class GridInputPage(ModularPage):
     def __init__(
             self, label: str, prompt: str, time_estimate: float,
-            prefill_grid=None, truth: List[List[int]] = None,
+            prefill_grid=None,
             grid_size: int = 10,
     ):
         super().__init__(
@@ -289,7 +257,6 @@ class GridInputPage(ModularPage):
                 grid_size=grid_size,
                 prefill_grid=prefill_grid,
                 num_edits=NUM_EDITS,
-                truth=truth,
             ),
             time_estimate=time_estimate,
         )
@@ -352,7 +319,8 @@ class GridDisplayPage(InfoPage):
 
 class GridCreateTrial(CreateTrialMixin, ImitationChainTrial):
     """Trial class specifically for grid creation tasks"""
-    time_estimate = 30 + 1
+    time_estimate = 30
+    accumulate_answers = True
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -366,143 +334,138 @@ class GridCreateTrial(CreateTrialMixin, ImitationChainTrial):
         )
 
     def other_trial(self):
+        active_generation = self.definition["generation"]
 
         prior_proposals = self.query.filter_by(
-            network_id=self.network_id, failed=False, finalized=True
+            network_id=self.network_id, failed=False, finalized=True,
         ).all()
 
         proposals = dict()
-        trial_maker = None
         for proposal in prior_proposals:
             generation = proposal.node.definition["generation"]
+
+            if generation >= active_generation:
+                continue
+
             proposals[generation] = proposals.get(generation, []) + [
                 proposal,
             ]
-            trial_maker = proposal.trial_maker
 
-        selections = trial_maker.rater_class.query.filter_by(
-            network_id=self.network_id, failed=False, finalized=True
+        selections = self.trial_maker.rater_class.query.filter_by(
+            network_id=self.network_id, failed=False, finalized=True,
         ).all()
         winners = []
         for selection in selections:
             winners.append(selection.answer)
 
-        logger.info(proposals)
-
-        active_generation = self.definition["generation"]
-
         html = "<div style='display: flex; flex-direction: row; justify-content: center; align-items: flex-start; gap: 10px;'>"
-        for generation in sorted(proposals.keys()):
-            if generation >= active_generation:
-                continue
 
-            # Each generation column
+        for generation in sorted(proposals.keys()):
+            # One column for each generation
             html += "<div style='display: flex; flex-direction: column; align-items: center; gap: 5px;'>"
 
             # Generation label
-            html += f"<div style='margin-bottom: 2px;'>Step {generation}</div>"
+            html += f"<div style='margin-bottom: 2px;'>Step {generation + 1}</div>"
 
             # Proposals within this generation
-            for proposal in proposals[generation]:
+            for i, proposal in enumerate(proposals[generation]):
+                # Create a row container for label + grid (only for first generation)
+                if generation == sorted(proposals.keys())[-1]:
+                    html += "<div style='display: flex; flex-direction: row; align-items: center; gap: 5px;'>"
+
                 if str(proposal) in winners:
-                    html += f"<div style='border: 2px solid green;'>{grid_to_html(proposal.answer, cell_size='5px', border_size='0px')}</div>"
+                    html += f"<div style='border: 2px solid green;'>{grid_to_html(proposal.answer['edit'], cell_size='5px', border_size='0px')}</div>"
                 else:
-                    html += f"<div>{grid_to_html(proposal.answer, cell_size='5px', border_size='0px')}</div>"
+                    html += f"<div>{grid_to_html(proposal.answer['edit'], cell_size='5px', border_size='0px')}</div>"
+
+                # Close the row container (only for first generation)
+                if generation == sorted(proposals.keys())[-1]:
+                    row_label = chr(65 + i)
+                    html += f"<div><strong>{row_label}</strong></div>"
+                    html += "</div>"
 
             html += "</div>"
 
         html += "</div>"
 
-        print(html)
-
-        return GridDisplayPage(
-            Markup(
-                f"<h3>Observe previous patterns <i>(creation mode)</i></h3>"
-                f"<p>Below, you may observe prior proposals and the winner at each iteration.</p>"
-                f"<p>On the next page, you will start from the latest winner and make up to five edits.</p>"
-                f"{html}"
+        return ModularPage(
+            label="copy",
+            prompt=Markup(
+                f"<h3>Choose a proposal to copy <i>(creation mode)</i></h3>"
+                f"<p>Below, you may observe prior proposals and the winner at each iteration. Choose a proposal to start from.</p>"
+                f"<p>On the next page, you will start from this proposal and make up to {NUM_EDITS} edits.</p>"
+                f"{html}",
             ),
+            control=PushButtonControl(
+                choices=[proposal.id for proposal in
+                         proposals[active_generation - 1]],
+                labels=[f"Start from {chr(65 + i)}" for i in range(3)],
+                arrange_vertically=True,
+            ),
+            time_estimate=10,
+            save_answer="copy"
         )
 
-    def trial(self):
+    def copy_page(self):
         """Show appropriate trial based on generation"""
         generation = self.definition["generation"]
 
         if generation == 0:
-            return self.first_trial()
+            return [self.first_trial()]
         else:
-            return self.other_trial()
+            return [
+                self.other_trial(),
+            ]
 
-    def input_page(self):
+    def edit_page(self, participant):
         """Input page for grid creation"""
         generation = self.definition["generation"]
-        original_grid = self.context["original"]
-        grid_size = len(original_grid)
+        grid_size = len(self.context["original"])
 
-        # For generation 0, start from scratch (no prefill); for generation > 0, start with last_choice
+        # For generation 0, start from scratch (no prefill); for generation > 0, start with participant pick
         if generation == 0:
             prefill_grid = np.zeros(
                 (GRID_SIZE, GRID_SIZE),
             ).tolist()  # Empty for first generation
         else:
-            prefill_grid = self.definition['last_choice']
+            copy_id = participant.var.get("copy")
+            copy_proposal = self.trial_maker.creator_class.query.filter_by(
+                id=copy_id
+            ).one()
+            prefill_grid = copy_proposal.answer['edit']
+
 
         text = Markup(
             f"<h3>Make a proposal <i>(creation mode)</i></h3>"
-            f"<p>Please add up to {NUM_EDITS} squares to the grid. You will receive a reward if your proposal is selected.</p>",
+            f"<p>Please edit up to {NUM_EDITS} squares in the grid. You will receive a reward if your proposal is selected.</p>",
         ) if generation == 0 else Markup(
             f"<h3>Edit the latest proposal <i>(creation mode)</i></h3>"
             f"<p>You are free to make up to {NUM_EDITS} modifications. You will receive a reward if your proposal is selected.</p>",
         )
 
         return GridInputPage(
-            "artefact",
+            "edit",
             text,
-            time_estimate=30,
+            time_estimate=20,
             prefill_grid=prefill_grid,
-            truth=self.context["original"],
             grid_size=grid_size,
         )
 
     def show_trial(self, experiment, participant):
         """Show the complete grid creation trial"""
-        info_page = self.trial()
-        input_page = self.input_page()
-        return [info_page, input_page]
+        return join(
+            self.copy_page(),
+            PageMaker(
+                lambda participant: self.edit_page(participant),
+                time_estimate=10
+            )
+        )
 
     def score_answer(self, answer, definition):
         self.var.accuracy = int(
-            GridNode.accuracy(self.context["original"], self.answer),
+            GridNode.accuracy(self.context["original"], self.answer['edit']),
         )
         return self.var.accuracy
-
-    def show_feedback(self, experiment, participant):
-        if CREATOR_FEEDBACK == False:
-            return InfoPage(
-                "Proposal received, thank you! Click 'next' when you are ready to see the next grid.",
-            )
-
-        if self.definition['generation'] == 0:
-            return
-
-        accuracy = GridNode.accuracy(self.context["original"], self.answer)
-        previous_accuracy = GridNode.accuracy(
-            self.context["original"], self.definition['last_choice'],
-        )
-        delta = accuracy - previous_accuracy
-
-        if delta == 0:
-            return InfoPage("Accuracy unchanged!")
-        elif delta > 0:
-            plural = "s are" if delta > 1 else " is"
-            return InfoPage(
-                f"Your proposal is more accurate ({delta} more cell{plural} correct)!",
-            )
-        else:
-            plural = "s" if delta < -1 else ""
-            return InfoPage(
-                f"Your proposal is less accurate ({-delta} more error{plural})!",
-            )
 
 
 class GridSelectTrial(SelectTrialMixin, ImitationChainTrial):
@@ -517,26 +480,12 @@ class GridSelectTrial(SelectTrialMixin, ImitationChainTrial):
     def bot_response(self, artefacts):
         score = dict()
         for i, artefact in enumerate(artefacts):
-            score[i] = np.sum(self.get_target_answer(artefact))
-            # score[i] = 0
-            #
-            # for j, artefact_compare in enumerate(artefacts):
-            #     if i == j:
-            #         continue
-            #
-            #     score[i] += GridNode.accuracy(
-            #         self.get_target_answer(artefact),
-            #         self.get_target_answer(artefact_compare)
-            #     )
+            score[i] = np.sum(self.get_target_answer(artefact)['edit'])
 
         return str(artefacts[max(score.keys(), key=score.get)])
 
     def show_trial(self, experiment, participant):
         artefacts = self.get_all_targets()
-        logger.info(artefacts)
-
-        for artefact in artefacts:
-            logger.info(artefact.id)
 
         assert len(
             {artefact.node_id for artefact in artefacts},
@@ -555,7 +504,7 @@ class GridSelectTrial(SelectTrialMixin, ImitationChainTrial):
                     "<div style='display: flex; justify-content: center; gap: 20px; flex-wrap: wrap; margin: 20px 0;'>"
                     + "\n".join(
                         [
-                            f"<div style='text-align: center;'><strong>Version {i + 1}:</strong><br>{grid_to_html(self.get_target_answer(artefact))}</div>"
+                            f"<div style='text-align: center;'><strong>Version {i + 1}:</strong><br>{grid_to_html(self.get_target_answer(artefact)['edit'])}</div>"
                             for i, artefact in enumerate(artefacts)
                         ],
                     )
@@ -571,6 +520,16 @@ class GridSelectTrial(SelectTrialMixin, ImitationChainTrial):
             time_estimate=30,
         )
 
+    def format_answer(self, answer, **kwargs):
+        answer = answer["choice"]
+        rated_target_strs = [f"{target}" for target in self.targets]
+        logger.info(rated_target_strs)
+        assert (
+            answer in rated_target_strs
+        ), "The answer must be one of the rated target_strs"
+        return answer
+
+
     def score_answer(self, answer, definition):
         super().score_answer(answer, definition)
 
@@ -579,7 +538,7 @@ class GridSelectTrial(SelectTrialMixin, ImitationChainTrial):
         accuracy = dict()
         for i, artefact in enumerate(artefacts):
             accuracy[str(artefact)] = GridNode.accuracy(
-                self.get_target_answer(artefact),
+                self.get_target_answer(artefact)["edit"],
                 self.context['original'],
             )
 
