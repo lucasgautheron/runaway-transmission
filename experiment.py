@@ -29,6 +29,11 @@ import random
 from typing import List
 import json
 
+from transformers import CLIPProcessor, CLIPModel
+from PIL import Image
+import torch
+import torch.nn.functional as F
+
 logger = get_logger()
 
 
@@ -38,10 +43,60 @@ def int_to_hex(n):
     return f"#{hash_val:06x}"
 
 
+def image_similarity_distribution(grids):
+    """
+    Compute probability distribution over proposed images based on similarity to target.
+
+    Args:
+        target_image_path: Path to the target image
+        proposed_arrays: List of binary numpy arrays (NxN) where 0=white, 1=black
+
+    Returns:
+        torch.Tensor: Probability distribution over proposed images
+    """
+    # Load model
+    model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
+    processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+
+    # Load target image
+    target_image = Image.open("static/truth/car.webp")
+
+    # Convert binary arrays to PIL Images (grayscale)
+    # Binary (0=white, 1=black) -> (255, 0) grayscale
+    proposed_images = [
+        Image.fromarray(((1 - np.array(arr)) * 255).astype(np.uint8), mode='L')
+        for arr in grids
+    ]
+
+    # Process all images
+    with torch.no_grad():
+        # Get target embedding
+        target_inputs = processor(images=target_image, return_tensors="pt")
+        target_embeds = model.get_image_features(**target_inputs)
+        target_embeds = F.normalize(target_embeds, p=2, dim=-1)
+
+        # Get proposed embeddings
+        proposed_inputs = processor(images=proposed_images, return_tensors="pt")
+        proposed_embeds = model.get_image_features(**proposed_inputs)
+        proposed_embeds = F.normalize(proposed_embeds, p=2, dim=-1)
+
+    # Compute similarities
+    similarities = torch.matmul(target_embeds, proposed_embeds.T)  # (1, n)
+
+    # Scale by temperature and get probabilities
+    temperature = model.logit_scale.exp()
+    logits = similarities * temperature
+    probs = logits.softmax(dim=1).squeeze()
+
+    logger.info(logits)
+    logger.info(probs)
+
+    return logits.detach().numpy()[0], probs.detach().numpy()
+
 GRID_SIZE = 16
 GRID_FILL = int(GRID_SIZE * GRID_SIZE * 0.5)
 MAX_ACCURACY = GRID_SIZE * GRID_SIZE
-NUM_EDITS = 16
+NUM_EDITS = 32
 
 N_TRIALS_PER_PARTICIPANT = 1
 N_CREATORS_PER_GENERATION = 3
@@ -411,8 +466,9 @@ class GridCreateTrial(CreateTrialMixin, ImitationChainTrial):
             label="copy",
             prompt=Markup(
                 f"<h3>Choose a proposal to start from <i>(creation mode)</i></h3>"
-                f"<p>Below, you may observe prior proposals and how many times they were selected at each step.</p>"
+                f"<p>Below, you may observe prior proposals and how many times they were selected by other participants at each step.</p>"
                 f"<p>Choose a proposal to start from. On the next page, you will start from this proposal and change up to {NUM_EDITS} pixels.</p>"
+                "<p>Remember that your goal is to have your creations selected as many times as possible!</p>"
                 f"{html}",
             ),
             control=PushButtonControl(
@@ -555,19 +611,22 @@ class GridSelectTrial(SelectTrialMixin, ImitationChainTrial):
         fitness = np.zeros(len(artefacts))
         pick = None
         for i, artefact in enumerate(artefacts):
-            fitness[i] = GridNode.accuracy(
-                self.get_target_answer(artefact)["edit"],
-                self.context['original'],
-            )
+            # fitness[i] = GridNode.accuracy(
+            #     self.get_target_answer(artefact)["edit"],
+            #     self.context['original'],
+            # )
             if str(artefact) == str(self.answer):
                 pick = i
 
-        fitness = 32 * fitness / (GRID_SIZE*GRID_SIZE)
+        # fitness = 32 * fitness / (GRID_SIZE*GRID_SIZE)
+        # p = softmax(fitness)
+        fitness, p = image_similarity_distribution([self.get_target_answer(artefact)["edit"] for artefact in artefacts])
+        logger.info(fitness)
 
         best = np.max(fitness)
         self.var.success = bool(fitness[pick] == best)
         self.var.accuracy = int(fitness[pick])
-        return float(softmax(fitness)[pick])
+        return float(p[pick])
 
     def show_feedback(self, experiment, participant):
         artefacts = self.get_all_targets()
@@ -589,16 +648,15 @@ class GridSelectTrial(SelectTrialMixin, ImitationChainTrial):
         for i, artefact in enumerate(artefacts_sorted):
             is_picked = str(artefact) == self.answer
 
-            border_size = 3 if is_picked else 1
+            border_color = "red" if is_picked else "white"
 
             html += f"""
             <div style="display: flex; gap: 40px; align-items: center;">
-                <div style="border: {border_size}px solid black; overflow: hidden; background-color: white;">
+                <div style="border: 3px solid {border_color}; overflow: hidden; background-color: white;">
                     {grid_to_html(self.get_target_answer(artefact)['edit'], cell_size="5px", border_size="0px")}
                 </div>
 
                 <div style="flex: 1; display: flex; align-items: center; gap: 15px;">
-                    <div style="width: 20px; font-size: 18px; font-weight: bold; color: #2563eb; flex-shrink: 0;">0</div>
             """
 
             if is_picked:
