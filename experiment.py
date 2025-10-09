@@ -24,21 +24,29 @@ from psynet.trial.chain import ChainNode
 from psynet.utils import get_logger
 
 import numpy as np
+from scipy.special import softmax
 import random
 from typing import List
 import json
 
 logger = get_logger()
 
+
+def int_to_hex(n):
+    """Map an integer to a unique hex color."""
+    hash_val = (n * 2654435761) % (256 ** 3)
+    return f"#{hash_val:06x}"
+
+
 GRID_SIZE = 16
 GRID_FILL = int(GRID_SIZE * GRID_SIZE * 0.5)
 MAX_ACCURACY = GRID_SIZE * GRID_SIZE
-NUM_EDITS = 8
+NUM_EDITS = 16
 
-N_TRIALS_PER_PARTICIPANT = 2
+N_TRIALS_PER_PARTICIPANT = 1
 N_CREATORS_PER_GENERATION = 3
 N_RATERS = 3
-N_GRIDS = 2
+N_GRIDS = 1
 N_GENERATIONS = 20
 RECRUITER = "hotair"
 DURATION_ESTIMATE = 120 + N_TRIALS_PER_PARTICIPANT * 30
@@ -85,7 +93,9 @@ class ArtefactNode(ChainNode, CreateAndRateNodeMixin):
         )
 
     def create_initial_seed(self, experiment=None, participant=None):
-        return {"generation": 0, "last_winner": "", "accuracy": 0, "options": dict()}
+        return {
+            "generation": 0, "last_winner": "", "accuracy": 0, "options": dict(),
+        }
 
     def create_definition_from_seed(self, seed, experiment, participant):
         return seed
@@ -369,41 +379,50 @@ class GridCreateTrial(CreateTrialMixin, ImitationChainTrial):
 
             # Proposals within this generation
             for i, proposal in enumerate(proposals[generation]):
-                # Create a row container for label + grid (only for first generation)
-                if generation == sorted(proposals.keys())[-1]:
-                    html += "<div style='display: flex; flex-direction: row; align-items: center; gap: 5px;'>"
+                # if generation == sorted(proposals.keys())[-1]:
+                html += "<div style='display: flex; flex-direction: row; align-items: center; gap: 5px;'>"
 
-                if str(proposal) in winners:
-                    html += f"<div style='border: 2px solid green;'>{grid_to_html(proposal.answer['edit'], cell_size='5px', border_size='0px')}</div>"
-                else:
-                    html += f"<div>{grid_to_html(proposal.answer['edit'], cell_size='5px', border_size='0px')}</div>"
+                # Display grids
+                html += f"<div>{grid_to_html(proposal.answer['edit'], cell_size='5px', border_size='0px')}</div>"
 
-                # Close the row container (only for first generation)
+                # Add colored circles for each selection
+                html += "<div style='display: flex; flex-direction: column; gap: 2px; min-width: 15px;'>"
+                for selection in selections:
+                    if selection.answer == str(proposals[generation][i]):
+                        # Add a colored circle (you can customize the color)
+                        html += f"<div style='width: 10px; height: 10px; border: 1px solid black; border-radius: 50%; background-color: {int_to_hex(selection.participant_id)};'></div>"
+
+                html += "</div>"
+
+                # Close the row container (only for last generation)
                 if generation == sorted(proposals.keys())[-1]:
                     row_label = chr(65 + i)
                     html += f"<div><strong>{row_label}</strong></div>"
-                    html += "</div>"
+
+                html += "</div>"
 
             html += "</div>"
 
         html += "</div>"
 
+        choices = [proposal.id for proposal in proposals[active_generation - 1]]
+
         return ModularPage(
             label="copy",
             prompt=Markup(
-                f"<h3>Choose a proposal to copy <i>(creation mode)</i></h3>"
-                f"<p>Below, you may observe prior proposals and the winner at each iteration. Choose a proposal to start from.</p>"
-                f"<p>On the next page, you will start from this proposal and make up to {NUM_EDITS} edits.</p>"
+                f"<h3>Choose a proposal to start from <i>(creation mode)</i></h3>"
+                f"<p>Below, you may observe prior proposals and how many times they were selected at each step.</p>"
+                f"<p>Choose a proposal to start from. On the next page, you will start from this proposal and change up to {NUM_EDITS} pixels.</p>"
                 f"{html}",
             ),
             control=PushButtonControl(
-                choices=[proposal.id for proposal in
-                         proposals[active_generation - 1]],
-                labels=[f"Start from {chr(65 + i)}" for i in range(3)],
+                choices=choices,
+                labels=[f"Start from {chr(65 + i)}" for i in
+                        range(len(choices))],
                 arrange_vertically=True,
             ),
             time_estimate=10,
-            save_answer="copy"
+            save_answer="copy",
         )
 
     def copy_page(self):
@@ -430,16 +449,15 @@ class GridCreateTrial(CreateTrialMixin, ImitationChainTrial):
         else:
             copy_id = participant.var.get("copy")
             copy_proposal = self.trial_maker.creator_class.query.filter_by(
-                id=copy_id
+                id=copy_id,
             ).one()
             prefill_grid = copy_proposal.answer['edit']
 
-
         text = Markup(
             f"<h3>Make a proposal <i>(creation mode)</i></h3>"
-            f"<p>Please edit up to {NUM_EDITS} squares in the grid. You will receive a reward if your proposal is selected.</p>",
+            f"<p>Please edit up to {NUM_EDITS} squares in the grid. You will receive a reward every time your proposal is selected.</p>",
         ) if generation == 0 else Markup(
-            f"<h3>Edit the latest proposal <i>(creation mode)</i></h3>"
+            f"<h3>Edit the proposal <i>(creation mode)</i></h3>"
             f"<p>You are free to make up to {NUM_EDITS} modifications. You will receive a reward if your proposal is selected.</p>",
         )
 
@@ -457,8 +475,8 @@ class GridCreateTrial(CreateTrialMixin, ImitationChainTrial):
             self.copy_page(),
             PageMaker(
                 lambda participant: self.edit_page(participant),
-                time_estimate=10
-            )
+                time_estimate=10,
+            ),
         )
 
     def score_answer(self, answer, definition):
@@ -498,9 +516,9 @@ class GridSelectTrial(SelectTrialMixin, ImitationChainTrial):
             "choice",
             Prompt(
                 Markup(
-                    "<h3>Choose the most accurate <i>(selection mode)</i></h3>"
-                    f"<p>{N_CREATORS_PER_GENERATION} participants have attempted to reproduce a grid from memory.</p>"
-                    "<p>Without having seen the original grid, try and choose the proposal you believe to be closer to the original.</p>"
+                    "<h3>Choose the best image <i>(selection mode)</i></h3>"
+                    f"<p>{N_CREATORS_PER_GENERATION} participants have produced images.</p>"
+                    "<p>Based on your prior observations, pick the image that you think will give you the highest rewards.</p>"
                     "<div style='display: flex; justify-content: center; gap: 20px; flex-wrap: wrap; margin: 20px 0;'>"
                     + "\n".join(
                         [
@@ -525,35 +543,92 @@ class GridSelectTrial(SelectTrialMixin, ImitationChainTrial):
         rated_target_strs = [f"{target}" for target in self.targets]
         logger.info(rated_target_strs)
         assert (
-            answer in rated_target_strs
+                answer in rated_target_strs
         ), "The answer must be one of the rated target_strs"
         return answer
-
 
     def score_answer(self, answer, definition):
         super().score_answer(answer, definition)
 
         artefacts = self.get_all_targets()
 
-        accuracy = dict()
+        fitness = np.zeros(len(artefacts))
+        pick = None
         for i, artefact in enumerate(artefacts):
-            accuracy[str(artefact)] = GridNode.accuracy(
+            fitness[i] = GridNode.accuracy(
                 self.get_target_answer(artefact)["edit"],
                 self.context['original'],
             )
+            if str(artefact) == str(self.answer):
+                pick = i
 
-        best = max(list(accuracy.values()))
-        self.var.success = bool(accuracy[str(self.answer)] == best)
-        self.var.accuracy = int(accuracy[str(self.answer)])
-        return self.var.success * 1
+        fitness = 32 * fitness / (GRID_SIZE*GRID_SIZE)
+
+        best = np.max(fitness)
+        self.var.success = bool(fitness[pick] == best)
+        self.var.accuracy = int(fitness[pick])
+        return float(softmax(fitness)[pick])
 
     def show_feedback(self, experiment, participant):
+        artefacts = self.get_all_targets()
+
+        # Sort artefacts so picked one comes first
+        artefacts_sorted = sorted(
+            artefacts, key=lambda x: str(x) != self.answer
+            )
+
+        progress_value = int(self.score * 100)
+        uncertainty = 100 - progress_value
+
+        html = f"Your choice scored {self.score * 100:.0f} points out of 100 points (the total score of all images combined). "
+
+        html += f"""<div style="display: flex; flex-direction: column; gap: 15px; max-width: 1400px; font-family: Arial, sans-serif;">
+        """
+
+        # Generate each row with grid and bar together
+        for i, artefact in enumerate(artefacts_sorted):
+            is_picked = str(artefact) == self.answer
+
+            border_size = 3 if is_picked else 1
+
+            html += f"""
+            <div style="display: flex; gap: 40px; align-items: center;">
+                <div style="border: {border_size}px solid black; overflow: hidden; background-color: white;">
+                    {grid_to_html(self.get_target_answer(artefact)['edit'], cell_size="5px", border_size="0px")}
+                </div>
+
+                <div style="flex: 1; display: flex; align-items: center; gap: 15px;">
+                    <div style="width: 20px; font-size: 18px; font-weight: bold; color: #2563eb; flex-shrink: 0;">0</div>
+            """
+
+            if is_picked:
+                # Show bar with given progress_value
+                html += f"""
+                    <div style="height: 40px; border: 3px solid #2563eb; border-radius: 8px; position: relative; background-color: white; overflow: visible; width: 300px;">
+                        <div style="position: absolute; left: {progress_value}%; top: -25px; transform: translateX(-50%); width: 0; height: 0; border-left: 12px solid transparent; border-right: 12px solid transparent; border-top: 20px solid #2563eb;"></div>
+                        <div style="position: absolute; left: {progress_value}%; top: 0; bottom: 0; width: 3px; background-color: #2563eb; transform: translateX(-50%);"></div>
+                    </div>
+                    <div style="font-weight: bold; font-size: 18px; color: #2563eb; white-space: nowrap;">{progress_value} points</div>
+                """
+            else:
+                # Show bar with uncertainty between 0 and 100-progress_value
+                html += f"""
+                    <div style="height: 40px; border: 3px solid #2563eb; border-radius: 8px; position: relative; background-color: white; overflow: hidden; width: 300px;">
+                        <div style="height: 100%; background-color: #3b82f6; width: {uncertainty}%;"></div>
+                        <div style="position: absolute; left: {uncertainty / 2}%; top: 50%; transform: translate(-50%, -50%); font-size: 28px; color: #2563eb; font-weight: bold;">?</div>
+                    </div>
+                    <div style="font-weight: bold; font-size: 18px; color: #1e40af; white-space: nowrap;">Between 0 and {uncertainty} points</div>
+                """
+
+            html += f"""
+                </div>
+            </div>
+            """
+
+        html += f"""</div>"""
+
         return InfoPage(
-            Markup("Congratulations, you chose the most accurate artefact!")
-            if self.score == 1
-            else Markup(
-                "This was not the most accurate artefact. Better luck next time!",
-            ),
+            Markup(html)
         )
 
 
@@ -659,41 +734,6 @@ class Exp(psynet.experiment.Experiment):
         #     ),
         #     time_estimate=45,
         # ),
-        # InfoPage(
-        #     Markup(
-        #         "<h4>Creation mode</h4>"
-        #         f"<p>Often, your grid will be pre-filled based on the last selected proposal.</p>"
-        #         f"<div style='display: flex'>"
-        #         f"<div style='display: block; border: 1px solid black; margin: 2px'><img style='display: block;' src='/static/images/create3.png' width='260px' /></div>"
-        #         f"<div style='display: block; border: 1px solid black; margin: 2px'><img style='display: block;' src='/static/images/create4.png' width='235px' /></div>"
-        #         f"</div>",
-        #     ),
-        #     time_estimate=30,
-        # ),
-        # ModularPage(
-        #     label="mock",
-        #     prompt=Markup(
-        #         f"<h4>Selection mode (less frequent)</h4>"
-        #         f"<p>In this mode, you will see several attempts to reproduce a grid, and you will have to guess which is the most accurate.</p>"
-        #         f"<p>In this mode, you will <b>never</b> see the original! Use your best judgment to decide which attempt is closer to the truth.</p>"
-        #         f"<div style='display: flex'>"
-        #         f"<img style='display: block; border: 1px solid black; margin: 2px' width='342px' src='/static/images/select.png' />"
-        #         f"</div>"
-        #         f"<div style='margin: 0 auto; text-align: center;'>Which version you would pick, in this example?</div>",
-        #     ),
-        #     control=PushButtonControl(
-        #         choices=[0, 1, 2],
-        #         labels=[f"Version {i + 1}" for i in range(3)],
-        #         arrange_vertically=False,
-        #         bot_response=lambda: "",
-        #     ),
-        #     time_estimate=30,
-        # ),
-        # InfoPage(
-        #     "Your training is complete. Please click 'next' when you are ready to start the experiment!",
-        #     time_estimate=10,
-        # ),
-        # PseudonymInputPage(),
         trial_maker_selection,
         SuccessfulEndPage(),
     )
