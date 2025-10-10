@@ -27,6 +27,8 @@ from psynet.asset import CachedAsset
 
 import numpy as np
 from scipy.special import softmax
+from scipy.stats import dirichlet, beta as beta_dist
+
 import random
 from typing import List
 import json
@@ -47,59 +49,9 @@ def int_to_hex(n):
     return f"#{hash_val:06x}"
 
 
-def image_similarity_distribution(grids):
-    """
-    Compute probability distribution over proposed images based on similarity to target.
-
-    Args:
-        target_image_path: Path to the target image
-        proposed_arrays: List of binary numpy arrays (NxN) where 0=white, 1=black
-
-    Returns:
-        torch.Tensor: Probability distribution over proposed images
-    """
-    # Load model
-    model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
-    processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
-
-    # Load target image
-    target_image = Image.open("static/truth/car.webp")
-
-    # Convert binary arrays to PIL Images (grayscale)
-    # Binary (0=white, 1=black) -> (255, 0) grayscale
-    proposed_images = [
-        Image.fromarray(((1 - np.array(arr)) * 255).astype(np.uint8), mode='L')
-        for arr in grids
-    ]
-
-    # Process all images
-    with torch.no_grad():
-        # Get target embedding
-        target_inputs = processor(images=target_image, return_tensors="pt")
-        target_embeds = model.get_image_features(**target_inputs)
-        target_embeds = F.normalize(target_embeds, p=2, dim=-1)
-
-        # Get proposed embeddings
-        proposed_inputs = processor(images=proposed_images, return_tensors="pt")
-        proposed_embeds = model.get_image_features(**proposed_inputs)
-        proposed_embeds = F.normalize(proposed_embeds, p=2, dim=-1)
-
-    # Compute similarities
-    similarities = torch.matmul(target_embeds, proposed_embeds.T)  # (1, n)
-
-    # Scale by temperature and get probabilities
-    temperature = model.logit_scale.exp()
-    logits = similarities * temperature
-    probs = logits.softmax(dim=1).squeeze()
-
-    logger.info(logits)
-    logger.info(probs)
-
-    return logits.detach().numpy()[0], probs.detach().numpy()
-
 GRID_SIZE = 16
 GRID_FILL = int(GRID_SIZE * GRID_SIZE * 0.5)
-MAX_ACCURACY = GRID_SIZE * GRID_SIZE
+# MAX_ACCURACY = GRID_SIZE * GRID_SIZE
 NUM_EDITS = 32
 
 N_TRIALS_PER_PARTICIPANT = 1
@@ -107,6 +59,8 @@ N_CREATORS_PER_GENERATION = 3
 N_RATERS = 3
 N_GRIDS = 1
 N_GENERATIONS = 20
+N_PREVIOUS_GENERATIONS_SHOWN = 5
+FITNESS_STRENGTH = 0.5
 RECRUITER = "hotair"
 DURATION_ESTIMATE = 120 + N_TRIALS_PER_PARTICIPANT * 30
 
@@ -127,38 +81,8 @@ def grid_to_html(
     return html
 
 
-class ArtefactNode(ChainNode, CreateAndRateNodeMixin):
-    def __init__(
-            self,
-            artefact=None,
-            # Content of artefact (e.g. List[List[int]] for a grid, Str for a story,...
-            **kwargs,
-    ):
-        if artefact is not None:
-            kwargs['context'] = {
-                "original": artefact, "artefact_type": self.get_artefact_type(),
-            }
-
-        super().__init__(**kwargs)
-        self.artefact = artefact
-
-    def get_artefact_type(self):
-        """Override in subclasses to specify artefact type"""
-        raise NotImplementedError(
-            "Subclasses must implement get_artefact_type()",
-        )
-
-    def create_initial_seed(self, experiment=None, participant=None):
-        return {
-            "generation": 0, "last_winner": "", "accuracy": 0, "options": dict(),
-        }
-
-    def create_definition_from_seed(self, seed, experiment, participant):
-        return seed
-
-
-class GridNode(ArtefactNode):
-    """Node class specifically for grid artefacts"""
+class GridNode(ChainNode, CreateAndRateNodeMixin):
+    """Node class for grid artefacts"""
 
     def __init__(
             self,
@@ -166,37 +90,48 @@ class GridNode(ArtefactNode):
             size: int = 10,  # grid size
             n_fill: int = 24,
             random: bool = False,  # random initialization
-            true_image: str = "",
+            true_image: str = None,
             **kwargs,
     ):
-
         if grid_data is None and random is True:
             grid_data = self.random(size, n_fill)
 
+        if true_image is not None:
+            kwargs['context'] = {
+                "original": grid_data,
+                "artefact_type": "grid",
+                "true_image": true_image,
+            }
+
         super().__init__(
-            artefact=grid_data,
-            assets={
-                "true_image": CachedAsset(true_image)
-            },
             **kwargs
         )
 
-        if self.artefact is None:
-            self.artefact = self.definition["last_winner"]
+        if grid_data is None:
+            grid_data = self.definition["last_winner"]
 
         # Validate grid during initialization
-        self._validate_grid_format(self.artefact)
+        self._validate_grid_format(grid_data)
 
     @property
     def size(self):
-        """Get grid size"""
-        return len(self.artefact) if self.artefact else 0
+        """Get grid size from definition"""
+        grid_data = self.definition.get("last_winner")
+        return len(grid_data) if grid_data else 0
 
-    def get_artefact_type(self):
-        return "grid"
+    def create_initial_seed(self, experiment=None, participant=None):
+        return {
+            "generation": 0,
+            "last_winner": "",
+            "fitness": 0,
+            "options": dict(),
+        }
+
+    def create_definition_from_seed(self, seed, experiment, participant):
+        return seed
 
     def random(self, size: int, n_fill: int):
-        """Generate random grid with exactly 24% cells == 1 and 76% == 0"""
+        """Generate random grid with exactly n_fill cells == 1"""
         total_cells = size * size
         num_ones = n_fill
         num_zeros = total_cells - num_ones
@@ -225,7 +160,6 @@ class GridNode(ArtefactNode):
     def summarize_trials(self, trials, experiment, participant):
         """Summarize trials - behavior depends on trial maker type"""
         logger.info("Summarizing!!")
-        # Create-and-rate mode: use selection logic
         logger.info(f"GridNode.summarize_trials: Create-and-rate mode")
         trial_maker = self.trial_maker
 
@@ -238,8 +172,7 @@ class GridNode(ArtefactNode):
             [trial.definition["generation"] for trial in all_rate_trials],
         )
         all_rate_trials = [trial for trial in all_rate_trials if
-                           trial.definition[
-                               "generation"] == last_generation]
+                           trial.definition["generation"] == last_generation]
 
         assert len(all_rate_trials) == N_RATERS
 
@@ -271,17 +204,52 @@ class GridNode(ArtefactNode):
             all_targets[i].id: count_dict[i]
             for i in count_dict.keys()
         }
-        definition["accuracy"] = all_targets[winning_index].var.accuracy
+        definition["fitness"] = all_targets[winning_index].var.fitness
 
         logger.info(definition)
 
         return definition
 
     @classmethod
-    def accuracy(cls, truth, attempt):
-        truth = np.array(truth, dtype=int) * 1
-        attempt = np.array(attempt, dtype=int) * 1
-        return (truth == attempt).sum()
+    # def fitness(cls, truth, attempt):
+    #     truth = np.array(truth, dtype=int) * 1
+    #     attempt = np.array(attempt, dtype=int) * 1
+    #     return (truth == attempt).sum()
+
+    def fitness(cls, true_image, attempt):
+        model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
+        processor = CLIPProcessor.from_pretrained(
+            "openai/clip-vit-base-patch32"
+            )
+
+        # Load target image
+        target_image = Image.open(true_image)
+
+        # Convert binary array to PIL Image (grayscale)
+        # Binary (0=white, 1=black) -> (255, 0) grayscale
+        attempt_image = Image.fromarray(
+            ((1 - np.array(attempt)) * 255).astype(np.uint8), mode='L'
+            )
+
+        # Process images
+        with torch.no_grad():
+            # Get target embedding
+            target_inputs = processor(images=target_image, return_tensors="pt")
+            target_embeds = model.get_image_features(**target_inputs)
+            target_embeds = F.normalize(target_embeds, p=2, dim=-1)
+
+            # Get attempt embedding
+            attempt_inputs = processor(
+                images=attempt_image, return_tensors="pt"
+                )
+            attempt_embeds = model.get_image_features(**attempt_inputs)
+            attempt_embeds = F.normalize(attempt_embeds, p=2, dim=-1)
+
+        similarity = torch.matmul(target_embeds, attempt_embeds.T)
+        temperature = model.logit_scale.exp()
+        logit = similarity * temperature
+
+        return logit.item()
 
     def __repr__(self):
         return f"GridNode({self.size}x{self.size})"
@@ -397,7 +365,7 @@ class GridCreateTrial(CreateTrialMixin, ImitationChainTrial):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.var.accuracy = None
+        self.var.fitness = None
 
     def first_trial(self):
         """First trial - show original grid only with greenish background"""
@@ -433,7 +401,8 @@ class GridCreateTrial(CreateTrialMixin, ImitationChainTrial):
 
         html = "<div style='display: flex; flex-direction: row; justify-content: center; align-items: flex-start; gap: 10px;'>"
 
-        for generation in sorted(proposals.keys()):
+        last_n_generations = sorted(proposals.keys())[-N_PREVIOUS_GENERATIONS_SHOWN:]
+        for generation in last_n_generations:
             # One column for each generation
             html += "<div style='display: flex; flex-direction: column; align-items: center; gap: 5px;'>"
 
@@ -441,6 +410,8 @@ class GridCreateTrial(CreateTrialMixin, ImitationChainTrial):
             html += f"<div style='margin-bottom: 2px;'>Step {generation + 1}</div>"
 
             # Proposals within this generation
+            random.shuffle(proposals[generation])
+
             for i, proposal in enumerate(proposals[generation]):
                 # if generation == sorted(proposals.keys())[-1]:
                 html += "<div style='display: flex; flex-direction: row; align-items: center; gap: 5px;'>"
@@ -544,10 +515,11 @@ class GridCreateTrial(CreateTrialMixin, ImitationChainTrial):
         )
 
     def score_answer(self, answer, definition):
-        self.var.accuracy = int(
-            GridNode.accuracy(self.context["original"], self.answer['edit']),
+        self.var.fitness = int(
+            GridNode.fitness(self.context["true_image"], self.answer['edit']),
         )
-        return self.var.accuracy
+
+        return self.var.fitness
 
 
 class GridSelectTrial(SelectTrialMixin, ImitationChainTrial):
@@ -557,7 +529,7 @@ class GridSelectTrial(SelectTrialMixin, ImitationChainTrial):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.var.success = None
-        self.var.accuracy = None
+        self.var.fitness = None
 
     def bot_response(self, artefacts):
         score = dict()
@@ -616,24 +588,20 @@ class GridSelectTrial(SelectTrialMixin, ImitationChainTrial):
 
         artefacts = self.get_all_targets()
 
-        fitness = np.zeros(len(artefacts))
         pick = None
         for i, artefact in enumerate(artefacts):
-            # fitness[i] = GridNode.accuracy(
-            #     self.get_target_answer(artefact)["edit"],
-            #     self.context['original'],
-            # )
             if str(artefact) == str(self.answer):
                 pick = i
 
-        # fitness = 32 * fitness / (GRID_SIZE*GRID_SIZE)
-        # p = softmax(fitness)
-        fitness, p = image_similarity_distribution([self.get_target_answer(artefact)["edit"] for artefact in artefacts])
-        logger.info(fitness)
+        fitness = np.array([artefact.var.fitness for artefact in artefacts])
+        p = softmax(fitness*FITNESS_STRENGTH)
+
+        logger.info("Normalized fitness: ")
+        logger.info(p)
 
         best = np.max(fitness)
         self.var.success = bool(fitness[pick] == best)
-        self.var.accuracy = int(fitness[pick])
+        self.var.fitness = float(fitness[pick])
         return float(p[pick])
 
     def show_feedback(self, experiment, participant):
@@ -642,12 +610,13 @@ class GridSelectTrial(SelectTrialMixin, ImitationChainTrial):
         # Sort artefacts so picked one comes first
         artefacts_sorted = sorted(
             artefacts, key=lambda x: str(x) != self.answer
-            )
+        )
+        fitness = np.array([artefact.var.fitness for artefact in artefacts_sorted])
+        p = softmax(fitness*FITNESS_STRENGTH)
 
-        progress_value = int(self.score * 100)
-        uncertainty = 100 - progress_value
+        pick_value = int(self.score * 100 + 0.5)
 
-        html = f"Your choice scored {self.score * 100:.0f} points out of 100 points (the total score of all images combined). "
+        html = f"Your choice scored {pick_value} points out of 100 points (the total score of all images combined). "
 
         html += f"""<div style="display: flex; flex-direction: column; gap: 15px; max-width: 1400px; font-family: Arial, sans-serif;">
         """
@@ -668,22 +637,32 @@ class GridSelectTrial(SelectTrialMixin, ImitationChainTrial):
             """
 
             if is_picked:
-                # Show bar with given progress_value
+                # Show bar with given pick_value - gradient from red to appropriate color
                 html += f"""
-                    <div style="height: 40px; border: 3px solid #2563eb; border-radius: 8px; position: relative; background-color: white; overflow: visible; width: 300px;">
-                        <div style="position: absolute; left: {progress_value}%; top: -25px; transform: translateX(-50%); width: 0; height: 0; border-left: 12px solid transparent; border-right: 12px solid transparent; border-top: 20px solid #2563eb;"></div>
-                        <div style="position: absolute; left: {progress_value}%; top: 0; bottom: 0; width: 3px; background-color: #2563eb; transform: translateX(-50%);"></div>
+                    <div style="height: 40px; border: 3px solid #2563eb; border-radius: 8px; position: relative; background: linear-gradient(to right, #ef4444 0%, #eab308 50%, #22c55e 100%); overflow: visible; width: 300px;">
+                        <div style="position: absolute; left: {pick_value}%; right: 0; top: 0; bottom: 0; background-color: white; border-radius: 0 5px 5px 0;"></div>
+                        <div style="position: absolute; left: {pick_value}%; top: -25px; transform: translateX(-50%); width: 0; height: 0; border-left: 12px solid transparent; border-right: 12px solid transparent; border-top: 20px solid #2563eb; z-index: 10;"></div>
+                        <div style="position: absolute; left: {pick_value}%; top: 0; bottom: 0; width: 3px; background-color: #2563eb; transform: translateX(-50%); z-index: 10;"></div>
                     </div>
-                    <div style="font-weight: bold; font-size: 18px; color: #2563eb; white-space: nowrap;">{progress_value} points</div>
+                    <div style="font-weight: bold; font-size: 18px; color: #2563eb; white-space: nowrap;">{pick_value} points</div>
                 """
             else:
-                # Show bar with uncertainty between 0 and 100-progress_value
+                concentration = 10
+                x = np.random.binomial(concentration, p[i], size=1)[0]
+                alpha = 1+x
+                beta = 1+(concentration-x)
+                low = int(100 * beta_dist(alpha, beta).ppf(0.025))
+                up = int(100 * beta_dist(alpha, beta).ppf(1 - 0.025))
+                # Show bar with uncertainty - gradient in the uncertainty region
                 html += f"""
                     <div style="height: 40px; border: 3px solid #2563eb; border-radius: 8px; position: relative; background-color: white; overflow: hidden; width: 300px;">
-                        <div style="height: 100%; background-color: #3b82f6; width: {uncertainty}%;"></div>
-                        <div style="position: absolute; left: {uncertainty / 2}%; top: 50%; transform: translate(-50%, -50%); font-size: 28px; color: #2563eb; font-weight: bold;">?</div>
+                        <div style="position: absolute; left: {low}%; width: {up - low}%; height: 100%; background: linear-gradient(to right, 
+                            hsl({low * 1.2}, 70%, 50%) 0%, 
+                            hsl({up * 1.2}, 70%, 50%) 100%
+                        );"></div>
+                        <div style="position: absolute; left: {low + (up - low) / 2}%; top: 50%; transform: translate(-50%, -50%); font-size: 28px; color: white; font-weight: bold; text-shadow: 0 0 3px rgba(0,0,0,0.5);">?</div>
                     </div>
-                    <div style="font-weight: bold; font-size: 18px; color: #1e40af; white-space: nowrap;">Between 0 and {uncertainty} points</div>
+                    <div style="font-weight: bold; font-size: 18px; color: #1e40af; white-space: nowrap;">Between {low} and {up} points</div>
                 """
 
             html += f"""
@@ -699,13 +678,14 @@ class GridSelectTrial(SelectTrialMixin, ImitationChainTrial):
 
 
 class GridTrialMaker(CreateAndRateTrialMakerMixin, ImitationChainTrialMaker):
-    def grow_network(self, network, experiment):
-        grown = super().grow_network(network, experiment)
-
-        if network.head.definition["accuracy"] == GRID_SIZE * GRID_SIZE:
-            network.full = True
-
-        return grown
+    pass
+    # def grow_network(self, network, experiment):
+    #     grown = super().grow_network(network, experiment)
+    #
+    #     if network.head.definition["fitness"] == GRID_SIZE * GRID_SIZE:
+    #         network.full = True
+    #
+    #     return grown
 
 
 nodes = [
