@@ -23,6 +23,8 @@ from psynet.trial.imitation_chain import (
 from psynet.trial.chain import ChainNode
 from psynet.utils import get_logger
 
+from psynet.asset import CachedAsset
+
 import numpy as np
 from scipy.special import softmax
 import random
@@ -33,6 +35,8 @@ from transformers import CLIPProcessor, CLIPModel
 from PIL import Image
 import torch
 import torch.nn.functional as F
+
+from os import listdir
 
 logger = get_logger()
 
@@ -107,9 +111,6 @@ RECRUITER = "hotair"
 DURATION_ESTIMATE = 120 + N_TRIALS_PER_PARTICIPANT * 30
 
 
-# assert N_TRIALS_PER_PARTICIPANT % (N_CREATORS_PER_GENERATION + 1) == 0
-
-
 # Utility function for grid HTML generation
 def grid_to_html(
         grid_data: List[List[int]], cell_size="20px", border_size="1px",
@@ -165,13 +166,20 @@ class GridNode(ArtefactNode):
             size: int = 10,  # grid size
             n_fill: int = 24,
             random: bool = False,  # random initialization
+            true_image: str = "",
             **kwargs,
     ):
 
         if grid_data is None and random is True:
             grid_data = self.random(size, n_fill)
 
-        super().__init__(artefact=grid_data, **kwargs)
+        super().__init__(
+            artefact=grid_data,
+            assets={
+                "true_image": CachedAsset(true_image)
+            },
+            **kwargs
+        )
 
         if self.artefact is None:
             self.artefact = self.definition["last_winner"]
@@ -700,13 +708,19 @@ class GridTrialMaker(CreateAndRateTrialMakerMixin, ImitationChainTrialMaker):
         return grown
 
 
-seed_nodes_selection = [
-    GridNode(size=GRID_SIZE, n_fill=GRID_FILL, random=True)
-    for _ in range(N_GRIDS)
+nodes = [
+    GridNode(
+        size=GRID_SIZE,
+        n_fill=GRID_FILL,
+        random=True,
+        true_image=f"static/truth/{image}"
+    )
+    for i, image in enumerate(listdir("static/truth/"))
+    if i < N_GRIDS
 ]
 # Experiment setup
 trial_maker_selection = GridTrialMaker(
-    start_nodes=seed_nodes_selection,
+    start_nodes=nodes,
     n_creators=N_CREATORS_PER_GENERATION,
     n_raters=N_RATERS,
     node_class=GridNode,
