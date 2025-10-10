@@ -370,7 +370,7 @@ class GridCreateTrial(CreateTrialMixin, ImitationChainTrial):
     def first_trial(self):
         """First trial - show original grid only with greenish background"""
         return InfoPage(
-            "You will be asked to create a new grid from scratch.",
+            "You will be asked to create a new drawing from scratch.",
             time_estimate=10,
         )
 
